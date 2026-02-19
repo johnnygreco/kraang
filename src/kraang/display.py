@@ -246,12 +246,22 @@ def display_init_summary(
     mcp_json_updated: bool,
     hook_configured: bool,
     sessions_indexed: int,
+    gitignore_updated: bool = False,
+    rules_configured: bool = False,
 ) -> None:
     """Display summary of kraang init."""
     parts = ["[bold green]kraang initialized![/bold green]\n"]
     parts.append(f"  Database: {db_path}")
     parts.append(f"  .mcp.json: {'updated' if mcp_json_updated else 'already configured'}")
+    parts.append(f"  .gitignore: {'updated' if gitignore_updated else 'already configured'}")
     parts.append(f"  SessionEnd hook: {'configured' if hook_configured else 'already configured'}")
+    parts.append(f"  Rules file: {'created' if rules_configured else 'already configured'}")
     if sessions_indexed > 0:
         parts.append(f"  Sessions indexed: {sessions_indexed}")
+    else:
+        parts.append("  Sessions indexed: 0 (no existing sessions)")
     console.print(Panel("\n".join(parts), title="Setup Complete"))
+
+    console.print("\n  [bold]Next steps:[/bold]")
+    console.print("    Start a new Claude Code session — kraang is ready to use.")
+    console.print("    Run [cyan]kraang status[/cyan] to check your knowledge base.\n")

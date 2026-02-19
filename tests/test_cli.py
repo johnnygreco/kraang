@@ -118,8 +118,9 @@ class TestInit:
         config = json.loads(mcp_path.read_text())
         assert "kraang" in config["mcpServers"]
 
-        # Backup file exists with original corrupt content
-        backups = list(tmp_path.glob(".mcp.json.*.bak"))
+        # Backup file exists in .kraang/backups/ with original corrupt content
+        backup_dir = tmp_path / ".kraang" / "backups"
+        backups = list(backup_dir.glob(".mcp.json.*.bak"))
         assert len(backups) == 1
         assert backups[0].read_text() == "{invalid json!!"
 
@@ -137,10 +138,119 @@ class TestInit:
         config = json.loads(settings_path.read_text())
         assert "SessionEnd" in config["hooks"]
 
-        # Backup file exists with original corrupt content
-        backups = list(claude_dir.glob("settings.json.*.bak"))
+        # Backup file exists in .kraang/backups/ with original corrupt content
+        backup_dir = tmp_path / ".kraang" / "backups"
+        backups = list(backup_dir.glob("settings.json.*.bak"))
         assert len(backups) == 1
         assert backups[0].read_text() == "not valid json {{{"
+
+    def test_creates_rules_file(self, tmp_path):
+        """Verify .claude/rules/kraang.md is created with expected content."""
+        runner.invoke(app, ["init", str(tmp_path)])
+        rules_file = tmp_path / ".claude" / "rules" / "kraang.md"
+        assert rules_file.exists()
+        content = rules_file.read_text()
+        assert "remember" in content
+        assert "recall" in content
+
+    def test_rules_file_idempotent(self, tmp_path):
+        """Running init twice doesn't corrupt the rules file."""
+        runner.invoke(app, ["init", str(tmp_path)])
+        rules_file = tmp_path / ".claude" / "rules" / "kraang.md"
+        first_content = rules_file.read_text()
+
+        runner.invoke(app, ["init", str(tmp_path)])
+        assert rules_file.read_text() == first_content
+
+    def test_updates_stale_mcp_config(self, tmp_path):
+        """Outdated kraang config in .mcp.json is refreshed."""
+        stale = {
+            "mcpServers": {
+                "kraang": {
+                    "command": "uvx",
+                    "args": ["kraang@0.1.0", "serve"],
+                    "env": {"KRAANG_DB_PATH": ".kraang/kraang.db"},
+                }
+            }
+        }
+        (tmp_path / ".mcp.json").write_text(json.dumps(stale))
+
+        result = runner.invoke(app, ["init", str(tmp_path)])
+        assert result.exit_code == 0
+
+        config = json.loads((tmp_path / ".mcp.json").read_text())
+        assert config["mcpServers"]["kraang"]["args"] == ["kraang", "serve"]
+
+    def test_preserves_non_kraang_mcp_servers(self, tmp_path):
+        """Updating stale kraang config preserves other servers."""
+        existing = {
+            "mcpServers": {
+                "other": {"command": "other-tool", "args": ["run"]},
+                "kraang": {
+                    "command": "uvx",
+                    "args": ["kraang@0.1.0", "serve"],
+                    "env": {"KRAANG_DB_PATH": ".kraang/kraang.db"},
+                },
+            }
+        }
+        (tmp_path / ".mcp.json").write_text(json.dumps(existing))
+
+        runner.invoke(app, ["init", str(tmp_path)])
+
+        config = json.loads((tmp_path / ".mcp.json").read_text())
+        assert config["mcpServers"]["other"]["command"] == "other-tool"
+        assert config["mcpServers"]["kraang"]["args"] == ["kraang", "serve"]
+
+    def test_init_output_shows_all_steps(self, tmp_path):
+        """Output contains status messages for each init step."""
+        result = runner.invoke(app, ["init", str(tmp_path)])
+        output = result.output
+        assert "Database" in output
+        assert ".gitignore" in output
+        assert ".mcp.json" in output
+        assert "hook" in output.lower()
+        assert "rules" in output.lower()
+
+    def test_sessions_indexed_zero(self, tmp_path):
+        """Init with no sessions shows 0 indexed."""
+        result = runner.invoke(app, ["init", str(tmp_path)])
+        assert "0" in result.output
+
+    def test_settings_json_with_non_hook_content(self, tmp_path):
+        """Existing permissions in settings.json are preserved when adding hook."""
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        existing = {"permissions": {"allow": ["Bash"]}}
+        (claude_dir / "settings.json").write_text(json.dumps(existing))
+
+        runner.invoke(app, ["init", str(tmp_path)])
+
+        config = json.loads((claude_dir / "settings.json").read_text())
+        assert config["permissions"]["allow"] == ["Bash"]
+        assert "SessionEnd" in config["hooks"]
+
+    def test_gitignore_already_has_kraang(self, tmp_path):
+        """No duplicate .kraang/ entry if .gitignore already contains it."""
+        (tmp_path / ".gitignore").write_text("node_modules/\n.kraang/\n")
+
+        runner.invoke(app, ["init", str(tmp_path)])
+
+        content = (tmp_path / ".gitignore").read_text()
+        assert content.count(".kraang/") == 1
+
+    def test_backup_in_kraang_dir(self, tmp_path):
+        """Corrupt .mcp.json backup goes to .kraang/backups/, not project root."""
+        (tmp_path / ".mcp.json").write_text("{{broken}}")
+
+        runner.invoke(app, ["init", str(tmp_path)])
+
+        backup_dir = tmp_path / ".kraang" / "backups"
+        assert backup_dir.is_dir()
+        backups = list(backup_dir.glob(".mcp.json.*.bak"))
+        assert len(backups) == 1
+        # No backup next to original
+        root_backups = list(tmp_path.glob(".mcp.json.*.bak"))
+        assert len(root_backups) == 0
 
 
 # ---------------------------------------------------------------------------
