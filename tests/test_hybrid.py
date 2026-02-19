@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import kraang.hybrid as hybrid_module
 import pytest
 
-from kraang.hybrid import HybridConfig, bm25_score_to_normalized, hybrid_search
+from kraang.hybrid import bm25_score_to_normalized, hybrid_search
 from kraang.models import Note, NoteSearchResult, utcnow
 
 
@@ -38,23 +39,16 @@ class TestBm25ScoreToNormalized:
 
 
 # ---------------------------------------------------------------------------
-# HybridConfig defaults
+# Module constants (replaced HybridConfig)
 # ---------------------------------------------------------------------------
 
 
-class TestHybridConfig:
+class TestModuleConstants:
     def test_defaults(self):
-        cfg = HybridConfig()
-        assert cfg.vector_weight == 0.7
-        assert cfg.text_weight == 0.3
-        assert cfg.min_score == 0.35
-        assert cfg.candidate_multiplier == 4
-
-    def test_custom_values(self):
-        cfg = HybridConfig(vector_weight=0.5, text_weight=0.5, min_score=0.1)
-        assert cfg.vector_weight == 0.5
-        assert cfg.text_weight == 0.5
-        assert cfg.min_score == 0.1
+        assert hybrid_module._VECTOR_WEIGHT == 0.7
+        assert hybrid_module._TEXT_WEIGHT == 0.3
+        assert hybrid_module._MIN_SCORE == 0.15
+        assert hybrid_module._CANDIDATE_MULTIPLIER == 4
 
 
 # ---------------------------------------------------------------------------
@@ -103,10 +97,9 @@ def _make_note(note_id: str, title: str, content: str, relevance: float = 1.0) -
 
 
 class TestHybridSearchWithProvider:
-    async def test_merges_vector_and_fts_results(self, populated_store):
+    async def test_merges_vector_and_fts_results(self, populated_store, monkeypatch):
         """Test that hybrid search merges results from both sources."""
-        note_a = _make_note("a", "Python Async", "asyncio event loops", relevance=1.0)
-        note_b = _make_note("b", "Docker Tips", "container orchestration", relevance=1.0)
+        monkeypatch.setattr(hybrid_module, "_MIN_SCORE", 0.0)
 
         class MockProvider:
             provider_id = "mock"
@@ -116,16 +109,27 @@ class TestHybridSearchWithProvider:
             async def embed_query(self, text):
                 return [0.5, 0.5, 0.5]
 
-        # Store a vector embedding for note_a so vector search returns it
-        await populated_store.upsert_note_embedding("a", [0.6, 0.6, 0.6])
+        # Store a vector embedding for a note so vector search returns it
+        notes = await populated_store.search_notes('"asyncio"', limit=1)
+        assert len(notes) > 0, "Expected at least one note matching 'asyncio'"
+        note_id = notes[0].note.note_id
+        await populated_store.upsert_note_embedding(note_id, [0.6, 0.6, 0.6])
 
-        # Use a very low min_score to ensure results pass
-        cfg = HybridConfig(min_score=0.0)
         results = await hybrid_search(
-            populated_store, MockProvider(), "asyncio", config=cfg
+            populated_store, MockProvider(), "asyncio"
         )
-        # Should return FTS results at minimum
+        # Should return results from at least FTS
         assert isinstance(results, list)
+        assert len(results) > 0
+
+        # Verify scores are in descending order
+        for i in range(1, len(results)):
+            assert results[i - 1].score >= results[i].score
+
+        # Verify all results are NoteSearchResult
+        for r in results:
+            assert isinstance(r, NoteSearchResult)
+            assert r.score >= 0.0
 
     async def test_min_score_filtering(self, populated_store):
         """Results below min_score should be filtered out."""
@@ -138,10 +142,65 @@ class TestHybridSearchWithProvider:
             async def embed_query(self, text):
                 return [0.1, 0.1, 0.1]
 
-        cfg = HybridConfig(min_score=0.99)  # Very high threshold
+        # Use monkeypatch via a high _MIN_SCORE
+        original = hybrid_module._MIN_SCORE
+        try:
+            hybrid_module._MIN_SCORE = 0.99  # Very high threshold
+            results = await hybrid_search(
+                populated_store, MockProvider(), "asyncio"
+            )
+            # All results should have score >= min_score
+            for r in results:
+                assert r.score >= 0.99
+        finally:
+            hybrid_module._MIN_SCORE = original
+
+    async def test_fts_fallback_when_embed_fails(self, populated_store):
+        """When embed_query raises, hybrid_search falls back to FTS-only."""
+
+        class FailingProvider:
+            provider_id = "mock"
+            model = "mock-v1"
+            dims = 3
+
+            async def embed_query(self, text):
+                raise RuntimeError("API down")
+
+            async def embed_batch(self, texts):
+                raise RuntimeError("API down")
+
+        results = await hybrid_search(populated_store, FailingProvider(), "python")
+        # Should fall back to FTS, not crash
+        assert isinstance(results, list)
+
+    async def test_vector_only_when_fts_empty(self, populated_store, monkeypatch):
+        """When FTS expression is empty (all stop words), only vector results used."""
+        monkeypatch.setattr(hybrid_module, "_MIN_SCORE", 0.0)
+
+        # A query consisting entirely of stop words produces empty FTS expression
+        class MockProvider:
+            provider_id = "mock"
+            model = "mock-v1"
+            dims = 3
+
+            async def embed_query(self, text):
+                return [0.5, 0.5, 0.5]
+
+        # Store some embeddings so vector search can return results
+        notes = await populated_store.search_notes('"python"', limit=1)
+        if notes:
+            await populated_store.upsert_note_embedding(
+                notes[0].note.note_id, [0.5, 0.5, 0.5]
+            )
+
+        # "the and or" are all stop words — build_fts_query returns ""
         results = await hybrid_search(
-            populated_store, MockProvider(), "asyncio", config=cfg
+            populated_store, MockProvider(), "the and or"
         )
-        # All results should have score >= min_score
-        for r in results:
-            assert r.score >= cfg.min_score
+        # Should not crash; may return vector results if embeddings exist
+        assert isinstance(results, list)
+
+    async def test_type_error_on_wrong_store_type(self):
+        """Passing a non-SQLiteStore should raise TypeError."""
+        with pytest.raises(TypeError, match="Expected SQLiteStore"):
+            await hybrid_search("not_a_store", None, "test")  # type: ignore[arg-type]

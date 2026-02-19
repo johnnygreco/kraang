@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import types
 
 import pytest
 
@@ -11,6 +12,92 @@ from kraang.embeddings import (
     _l2_normalize,
     create_provider,
 )
+
+
+# ---------------------------------------------------------------------------
+# Shared httpx mock helpers
+# ---------------------------------------------------------------------------
+
+
+class FakeResponse:
+    """Configurable fake httpx response."""
+
+    def __init__(self, data: dict | None = None, status_code: int = 200):
+        self._data = data or {}
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import httpx
+
+            request = httpx.Request("POST", "https://api.openai.com/v1/embeddings")
+            response = httpx.Response(self.status_code, request=request)
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}", request=request, response=response
+            )
+
+    def json(self):
+        return self._data
+
+
+class FakeClient:
+    """Configurable fake httpx.AsyncClient."""
+
+    def __init__(self, handler=None):
+        self._handler = handler
+        self.last_url = None
+        self.last_json = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+    async def post(self, url, headers=None, json=None):
+        self.last_url = url
+        self.last_json = json
+        if self._handler:
+            return self._handler(url, headers, json)
+        return FakeResponse()
+
+
+def _patch_httpx(monkeypatch, fake_client):
+    """Patch _call_api to use a fake httpx module with the given client."""
+    fake_httpx = types.ModuleType("httpx")
+    # We need the real httpx exception types for the retry logic
+    import httpx as real_httpx
+
+    fake_httpx.AsyncClient = lambda timeout=None: fake_client  # type: ignore[attr-defined]
+    fake_httpx.HTTPStatusError = real_httpx.HTTPStatusError  # type: ignore[attr-defined]
+    fake_httpx.ConnectError = real_httpx.ConnectError  # type: ignore[attr-defined]
+    fake_httpx.TimeoutException = real_httpx.TimeoutException  # type: ignore[attr-defined]
+    fake_httpx.Request = real_httpx.Request  # type: ignore[attr-defined]
+    fake_httpx.Response = real_httpx.Response  # type: ignore[attr-defined]
+
+    original_call_api = OpenAIEmbeddingProvider._call_api
+
+    async def patched_call_api(self, texts):
+        import sys
+
+        old_httpx = sys.modules.get("httpx")
+        sys.modules["httpx"] = fake_httpx
+        try:
+            import kraang.embeddings as mod
+
+            old_base = mod._BASE_DELAY
+            mod._BASE_DELAY = 0.01  # Speed up retries for testing
+            try:
+                return await original_call_api(self, texts)
+            finally:
+                mod._BASE_DELAY = old_base
+        finally:
+            if old_httpx is not None:
+                sys.modules["httpx"] = old_httpx
+            else:
+                sys.modules.pop("httpx", None)
+
+    monkeypatch.setattr(OpenAIEmbeddingProvider, "_call_api", patched_call_api)
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +122,13 @@ class TestL2Normalize:
         vec = [0.0, 0.0, 0.0]
         result = _l2_normalize(vec)
         assert result == [0.0, 0.0, 0.0]
+
+    def test_zero_vector_logs_warning(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="kraang.embeddings"):
+            _l2_normalize([0.0, 0.0, 0.0])
+        assert "Zero vector" in caplog.text
 
     def test_negative_values(self):
         vec = [-3.0, 4.0]
@@ -109,58 +203,13 @@ class TestOpenAIProvider:
 
     async def test_embed_query_calls_api(self, monkeypatch):
         """Mock httpx to verify embed_query calls the API correctly."""
-        import kraang.embeddings as emb_mod
-
-        fake_response_data = {
-            "data": [
-                {"index": 0, "embedding": [0.1, 0.2, 0.3]},
-            ]
+        response_data = {
+            "data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]
         }
-
-        class FakeResponse:
-            def raise_for_status(self):
-                pass
-
-            def json(self):
-                return fake_response_data
-
-        class FakeClient:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                pass
-
-            async def post(self, url, headers=None, json=None):
-                self.last_url = url
-                self.last_json = json
-                return FakeResponse()
-
-        fake_client = FakeClient()
-
-        # Patch httpx.AsyncClient in the embeddings module
-        import types
-
-        fake_httpx = types.ModuleType("httpx")
-        fake_httpx.AsyncClient = lambda timeout=None: fake_client  # type: ignore[attr-defined]
-
-        # Use monkeypatch to inject fake httpx into the module's import
-        original_call_api = OpenAIEmbeddingProvider._call_api
-
-        async def patched_call_api(self, texts):
-            import sys
-
-            old_httpx = sys.modules.get("httpx")
-            sys.modules["httpx"] = fake_httpx
-            try:
-                return await original_call_api(self, texts)
-            finally:
-                if old_httpx is not None:
-                    sys.modules["httpx"] = old_httpx
-                else:
-                    sys.modules.pop("httpx", None)
-
-        monkeypatch.setattr(OpenAIEmbeddingProvider, "_call_api", patched_call_api)
+        fake_client = FakeClient(
+            handler=lambda url, headers, json: FakeResponse(response_data)
+        )
+        _patch_httpx(monkeypatch, fake_client)
 
         p = OpenAIEmbeddingProvider("sk-test-key")
         result = await p.embed_query("hello world")
@@ -170,51 +219,16 @@ class TestOpenAIProvider:
 
     async def test_embed_batch_preserves_order(self, monkeypatch):
         """Ensure results are sorted by index even if API returns out of order."""
-        fake_response_data = {
+        response_data = {
             "data": [
                 {"index": 1, "embedding": [0.4, 0.5, 0.6]},
                 {"index": 0, "embedding": [0.1, 0.2, 0.3]},
             ]
         }
-
-        class FakeResponse:
-            def raise_for_status(self):
-                pass
-
-            def json(self):
-                return fake_response_data
-
-        class FakeClient:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                pass
-
-            async def post(self, url, headers=None, json=None):
-                return FakeResponse()
-
-        import types
-
-        fake_httpx = types.ModuleType("httpx")
-        fake_httpx.AsyncClient = lambda timeout=None: FakeClient()  # type: ignore[attr-defined]
-
-        original_call_api = OpenAIEmbeddingProvider._call_api
-
-        async def patched_call_api(self, texts):
-            import sys
-
-            old_httpx = sys.modules.get("httpx")
-            sys.modules["httpx"] = fake_httpx
-            try:
-                return await original_call_api(self, texts)
-            finally:
-                if old_httpx is not None:
-                    sys.modules["httpx"] = old_httpx
-                else:
-                    sys.modules.pop("httpx", None)
-
-        monkeypatch.setattr(OpenAIEmbeddingProvider, "_call_api", patched_call_api)
+        fake_client = FakeClient(
+            handler=lambda url, headers, json: FakeResponse(response_data)
+        )
+        _patch_httpx(monkeypatch, fake_client)
 
         p = OpenAIEmbeddingProvider("sk-test-key")
         results = await p.embed_batch(["text1", "text2"])
@@ -226,60 +240,19 @@ class TestOpenAIProvider:
     async def test_retry_on_failure(self, monkeypatch):
         """Test that _call_api retries on transient failures."""
         call_count = 0
-        fake_response_data = {
+        response_data = {
             "data": [{"index": 0, "embedding": [1.0, 0.0]}]
         }
 
-        class FakeResponse:
-            def raise_for_status(self):
-                pass
+        def handler(url, headers, json):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise OSError("transient failure")
+            return FakeResponse(response_data)
 
-            def json(self):
-                return fake_response_data
-
-        class FakeClient:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                pass
-
-            async def post(self, url, headers=None, json=None):
-                nonlocal call_count
-                call_count += 1
-                if call_count < 3:
-                    raise ConnectionError("transient failure")
-                return FakeResponse()
-
-        import types
-
-        fake_httpx = types.ModuleType("httpx")
-        fake_httpx.AsyncClient = lambda timeout=None: FakeClient()  # type: ignore[attr-defined]
-
-        original_call_api = OpenAIEmbeddingProvider._call_api
-
-        async def patched_call_api(self, texts):
-            import sys
-
-            old_httpx = sys.modules.get("httpx")
-            sys.modules["httpx"] = fake_httpx
-            try:
-                # Speed up retries for testing
-                import kraang.embeddings as mod
-
-                old_base = mod._BASE_DELAY
-                mod._BASE_DELAY = 0.01
-                try:
-                    return await original_call_api(self, texts)
-                finally:
-                    mod._BASE_DELAY = old_base
-            finally:
-                if old_httpx is not None:
-                    sys.modules["httpx"] = old_httpx
-                else:
-                    sys.modules.pop("httpx", None)
-
-        monkeypatch.setattr(OpenAIEmbeddingProvider, "_call_api", patched_call_api)
+        fake_client = FakeClient(handler=handler)
+        _patch_httpx(monkeypatch, fake_client)
 
         p = OpenAIEmbeddingProvider("sk-test-key")
         result = await p.embed_query("test")
@@ -289,48 +262,93 @@ class TestOpenAIProvider:
     async def test_all_retries_exhausted(self, monkeypatch):
         """Test RuntimeError after all retries fail."""
 
-        class FakeClient:
-            async def __aenter__(self):
-                return self
+        def handler(url, headers, json):
+            raise OSError("permanent failure")
 
-            async def __aexit__(self, *args):
-                pass
-
-            async def post(self, url, headers=None, json=None):
-                raise ConnectionError("permanent failure")
-
-        import types
-
-        fake_httpx = types.ModuleType("httpx")
-        fake_httpx.AsyncClient = lambda timeout=None: FakeClient()  # type: ignore[attr-defined]
-
-        original_call_api = OpenAIEmbeddingProvider._call_api
-
-        async def patched_call_api(self, texts):
-            import sys
-
-            old_httpx = sys.modules.get("httpx")
-            sys.modules["httpx"] = fake_httpx
-            try:
-                import kraang.embeddings as mod
-
-                old_base = mod._BASE_DELAY
-                mod._BASE_DELAY = 0.01
-                try:
-                    return await original_call_api(self, texts)
-                finally:
-                    mod._BASE_DELAY = old_base
-            finally:
-                if old_httpx is not None:
-                    sys.modules["httpx"] = old_httpx
-                else:
-                    sys.modules.pop("httpx", None)
-
-        monkeypatch.setattr(OpenAIEmbeddingProvider, "_call_api", patched_call_api)
+        fake_client = FakeClient(handler=handler)
+        _patch_httpx(monkeypatch, fake_client)
 
         p = OpenAIEmbeddingProvider("sk-test-key")
         with pytest.raises(RuntimeError, match="failed after"):
             await p.embed_query("test")
+
+    async def test_no_retry_on_client_errors(self, monkeypatch):
+        """401/403 errors should raise immediately without retrying."""
+        call_count = 0
+
+        def handler(url, headers, json):
+            nonlocal call_count
+            call_count += 1
+            return FakeResponse(status_code=401)
+
+        fake_client = FakeClient(handler=handler)
+        _patch_httpx(monkeypatch, fake_client)
+
+        p = OpenAIEmbeddingProvider("sk-test-key")
+        import httpx
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await p.embed_query("test")
+        assert call_count == 1  # No retries — raised immediately
+
+    async def test_no_retry_on_403(self, monkeypatch):
+        """403 errors should raise immediately without retrying."""
+        call_count = 0
+
+        def handler(url, headers, json):
+            nonlocal call_count
+            call_count += 1
+            return FakeResponse(status_code=403)
+
+        fake_client = FakeClient(handler=handler)
+        _patch_httpx(monkeypatch, fake_client)
+
+        p = OpenAIEmbeddingProvider("sk-test-key")
+        import httpx
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await p.embed_query("test")
+        assert call_count == 1
+
+    async def test_embed_query_empty_string_raises(self):
+        """Empty string should raise ValueError immediately."""
+        p = OpenAIEmbeddingProvider("sk-test")
+        with pytest.raises(ValueError, match="empty"):
+            await p.embed_query("")
+
+    async def test_embed_query_whitespace_only_raises(self):
+        """Whitespace-only string should raise ValueError."""
+        p = OpenAIEmbeddingProvider("sk-test")
+        with pytest.raises(ValueError, match="empty"):
+            await p.embed_query("   ")
+
+    async def test_embed_batch_empty_string_raises(self):
+        """Batch with an empty string should raise ValueError."""
+        p = OpenAIEmbeddingProvider("sk-test")
+        with pytest.raises(ValueError, match="empty"):
+            await p.embed_batch(["hello", ""])
+
+    async def test_retry_on_429(self, monkeypatch):
+        """429 rate limit should be retried."""
+        call_count = 0
+        response_data = {
+            "data": [{"index": 0, "embedding": [1.0, 0.0]}]
+        }
+
+        def handler(url, headers, json):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                return FakeResponse(status_code=429)
+            return FakeResponse(response_data)
+
+        fake_client = FakeClient(handler=handler)
+        _patch_httpx(monkeypatch, fake_client)
+
+        p = OpenAIEmbeddingProvider("sk-test-key")
+        result = await p.embed_query("test")
+        assert len(result) == 2
+        assert call_count == 3  # 2 retries + 1 success
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ def _l2_normalize(vec: list[float]) -> list[float]:
     """Normalise a vector to unit length (L2 norm)."""
     norm = math.sqrt(sum(x * x for x in vec))
     if norm == 0.0:
+        logger.warning("Zero vector returned from embedding API — this vector will not match any queries")
         return vec
     return [x / norm for x in vec]
 
@@ -31,7 +32,11 @@ def _l2_normalize(vec: list[float]) -> list[float]:
 
 @runtime_checkable
 class EmbeddingProvider(Protocol):
-    """Minimal interface every embedding backend must satisfy."""
+    """Embedding provider interface.
+
+    Implementations must return L2-normalized vectors (unit length)
+    so that cosine similarity equals dot product.
+    """
 
     @property
     def provider_id(self) -> str: ...
@@ -81,6 +86,8 @@ class OpenAIEmbeddingProvider:
 
     async def embed_query(self, text: str) -> list[float]:
         """Embed a single query string."""
+        if not text or not text.strip():
+            raise ValueError("Cannot embed empty text")
         results = await self._call_api([text])
         return results[0]
 
@@ -88,6 +95,9 @@ class OpenAIEmbeddingProvider:
         """Embed a batch of texts."""
         if not texts:
             return []
+        empty = [t for t in texts if not t or not t.strip()]
+        if empty:
+            raise ValueError("Cannot embed empty text")
         return await self._call_api(texts)
 
     # -- internals -----------------------------------------------------------
@@ -103,9 +113,9 @@ class OpenAIEmbeddingProvider:
             ) from exc
 
         last_exc: Exception | None = None
-        for attempt in range(1, _MAX_RETRIES + 1):
-            try:
-                async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            for attempt in range(1, _MAX_RETRIES + 1):
+                try:
                     resp = await client.post(
                         "https://api.openai.com/v1/embeddings",
                         headers={
@@ -117,19 +127,27 @@ class OpenAIEmbeddingProvider:
                     resp.raise_for_status()
                     data = resp.json()
 
-                # Sort by index to preserve input order.
-                items = sorted(data["data"], key=lambda d: d["index"])
-                return [_l2_normalize(item["embedding"]) for item in items]
+                    # Sort by index to preserve input order.
+                    items = sorted(data["data"], key=lambda d: d["index"])
+                    return [_l2_normalize(item["embedding"]) for item in items]
 
-            except Exception as exc:
-                last_exc = exc
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code in (429, 500, 502, 503, 529):
+                        last_exc = exc
+                    else:
+                        raise  # Non-retryable (401, 403, 400, etc.)
+                except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
+                    last_exc = exc
+                except Exception as exc:
+                    raise  # Don't retry unexpected errors
+
                 if attempt < _MAX_RETRIES:
                     delay = min(_BASE_DELAY * (2 ** (attempt - 1)), _MAX_DELAY)
                     logger.warning(
                         "OpenAI embedding attempt %d/%d failed: %s — retrying in %.1fs",
                         attempt,
                         _MAX_RETRIES,
-                        exc,
+                        last_exc,
                         delay,
                     )
                     await asyncio.sleep(delay)
