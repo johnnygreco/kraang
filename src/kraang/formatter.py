@@ -74,12 +74,15 @@ def _format_date(dt: datetime) -> str:
 # ---------------------------------------------------------------------------
 
 
-def format_remember_created(note: Note, similar: list[Note] | None = None) -> str:
+def format_remember_created(
+    note: Note, embedded: bool = False, similar: list[Note] | None = None
+) -> str:
     """Format output for a newly created note."""
     parts: list[str] = []
     tag_str = f" (tags: {_format_tags(note.tags)})" if note.tags else ""
     cat_str = f" | category: {note.category}" if note.category else ""
-    parts.append(f'Created "{note.title}"{tag_str}{cat_str}')
+    embed_str = " [embedded]" if embedded else " [FTS only]"
+    parts.append(f'Created "{note.title}"{tag_str}{cat_str}{embed_str}')
 
     if similar:
         for s in similar:
@@ -91,11 +94,12 @@ def format_remember_created(note: Note, similar: list[Note] | None = None) -> st
     return "\n".join(parts)
 
 
-def format_remember_updated(note: Note) -> str:
+def format_remember_updated(note: Note, embedded: bool = False) -> str:
     """Format output for an updated note."""
     tag_str = f" (tags: {_format_tags(note.tags)})" if note.tags else ""
     cat_str = f" | category: {note.category}" if note.category else ""
-    return f'Updated "{note.title}"{tag_str}{cat_str}'
+    embed_str = " [embedded]" if embedded else " [FTS only]"
+    return f'Updated "{note.title}"{tag_str}{cat_str}{embed_str}'
 
 
 # ---------------------------------------------------------------------------

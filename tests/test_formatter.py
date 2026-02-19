@@ -77,7 +77,7 @@ class TestFormatRemember:
     def test_created_with_similar(self):
         note = _make_note(title="API design v1")
         similar = [_make_note(title="v1 API design decisions", note_id="xyz")]
-        result = format_remember_created(note, similar)
+        result = format_remember_created(note, similar=similar)
         assert 'Created "API design v1"' in result
         assert "similar existing note" in result
         assert "v1 API design decisions" in result

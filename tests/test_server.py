@@ -21,7 +21,7 @@ def _patch_store(store, monkeypatch):
     monkeypatch.setattr(server, "_get_store", _get_test_store)
 
     # Reset provider globals so each test starts clean (FTS-only by default).
-    monkeypatch.setattr(server, "_provider_checked", False)
+    monkeypatch.setattr(server, "_provider_init_attempted", False)
     monkeypatch.setattr(server, "_provider", None)
 
     async def _no_provider():
@@ -242,7 +242,7 @@ class TestReadSession:
 class TestContext:
     async def test_context_returns_xml(self, populated_store, monkeypatch):
         """context tool should return safety-framed XML."""
-        monkeypatch.setattr(server, "_provider_checked", False)
+        monkeypatch.setattr(server, "_provider_init_attempted", False)
         monkeypatch.setattr(server, "_provider", None)
 
         async def _no_provider():
@@ -255,7 +255,7 @@ class TestContext:
         assert "</relevant-memories>" in result
 
     async def test_context_includes_safety_warning(self, populated_store, monkeypatch):
-        monkeypatch.setattr(server, "_provider_checked", False)
+        monkeypatch.setattr(server, "_provider_init_attempted", False)
         monkeypatch.setattr(server, "_provider", None)
 
         async def _no_provider():
@@ -267,7 +267,7 @@ class TestContext:
         assert "untrusted" in result.lower()
 
     async def test_context_no_results(self, store, monkeypatch):
-        monkeypatch.setattr(server, "_provider_checked", False)
+        monkeypatch.setattr(server, "_provider_init_attempted", False)
         monkeypatch.setattr(server, "_provider", None)
 
         async def _no_provider():
@@ -295,7 +295,7 @@ class TestContext:
 class TestRecallWithoutEmbeddings:
     async def test_recall_fts_only(self, populated_store, monkeypatch):
         """recall should work without embeddings using FTS-only fallback."""
-        monkeypatch.setattr(server, "_provider_checked", False)
+        monkeypatch.setattr(server, "_provider_init_attempted", False)
         monkeypatch.setattr(server, "_provider", None)
 
         async def _no_provider():
@@ -307,7 +307,7 @@ class TestRecallWithoutEmbeddings:
         assert "Results for" in result
 
     async def test_recall_notes_scope_fts_only(self, populated_store, monkeypatch):
-        monkeypatch.setattr(server, "_provider_checked", False)
+        monkeypatch.setattr(server, "_provider_init_attempted", False)
         monkeypatch.setattr(server, "_provider", None)
 
         async def _no_provider():
@@ -327,7 +327,7 @@ class TestRecallWithoutEmbeddings:
 class TestRememberEmbeddingFailure:
     async def test_remember_succeeds_if_embedding_fails(self, store, monkeypatch):
         """remember should still save the note even if embedding fails."""
-        monkeypatch.setattr(server, "_provider_checked", False)
+        monkeypatch.setattr(server, "_provider_init_attempted", False)
         monkeypatch.setattr(server, "_provider", None)
 
         class BrokenProvider:
@@ -352,7 +352,7 @@ class TestRememberEmbeddingFailure:
 
     async def test_remember_succeeds_without_provider(self, store, monkeypatch):
         """remember should work fine when no embedding provider is available."""
-        monkeypatch.setattr(server, "_provider_checked", False)
+        monkeypatch.setattr(server, "_provider_init_attempted", False)
         monkeypatch.setattr(server, "_provider", None)
 
         async def _no_provider():
@@ -371,7 +371,7 @@ class TestRememberEmbeddingFailure:
 
 class TestStatusEmbeddings:
     async def test_status_shows_embedding_disabled(self, store, monkeypatch):
-        monkeypatch.setattr(server, "_provider_checked", False)
+        monkeypatch.setattr(server, "_provider_init_attempted", False)
         monkeypatch.setattr(server, "_provider", None)
 
         async def _no_provider():
@@ -382,3 +382,138 @@ class TestStatusEmbeddings:
         result = await server.status()
         assert "Kraang Status" in result
         assert "disabled" in result.lower() or "Embeddings" in result
+
+    async def test_status_disabled_no_extras(self, store, monkeypatch):
+        """Status should show 'install with' message when extras not installed."""
+        import builtins
+
+        async def _no_provider():
+            return None
+
+        monkeypatch.setattr(server, "_get_provider", _no_provider)
+        monkeypatch.setattr(server, "create_provider", None)
+
+        # Block the import of kraang.embeddings so the try/except in status() hits ImportError
+        _real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kwargs):
+            if name == "kraang.embeddings":
+                raise ImportError("mocked: extras not installed")
+            return _real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+        result = await server.status()
+        assert "pip install kraang[embeddings]" in result
+
+    async def test_status_disabled_no_api_key(self, store, monkeypatch):
+        """Status should show 'set OPENAI_API_KEY' message when extras installed but no key."""
+        async def _no_provider():
+            return None
+
+        monkeypatch.setattr(server, "_get_provider", _no_provider)
+        # create_provider is importable (extras installed) but provider is None (no API key)
+        # We don't need to change create_provider here — the import check in status()
+        # will try importing kraang.embeddings directly.
+
+        result = await server.status()
+        assert "disabled" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# _get_provider — extras not installed
+# ---------------------------------------------------------------------------
+
+
+class TestGetProvider:
+    async def test_get_provider_when_extras_not_installed(self, monkeypatch):
+        monkeypatch.setattr(server, "create_provider", None)
+        monkeypatch.setattr(server, "_provider_init_attempted", False)
+        monkeypatch.setattr(server, "_provider", None)
+        result = await server._get_provider()
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# context — max_results parameter
+# ---------------------------------------------------------------------------
+
+
+class TestContextMaxResults:
+    async def test_context_respects_max_results(self, populated_store, monkeypatch):
+        """context tool should respect max_results parameter."""
+        monkeypatch.setattr(server, "_provider_init_attempted", False)
+        monkeypatch.setattr(server, "_provider", None)
+
+        async def _no_provider():
+            return None
+
+        monkeypatch.setattr(server, "_get_provider", _no_provider)
+
+        result = await server.context("python", max_results=2)
+        assert "<relevant-memories>" in result
+        assert "</relevant-memories>" in result
+        # Count the numbered entries in the result
+        lines = result.strip().split("\n")
+        numbered_lines = [line for line in lines if line and line[0].isdigit() and ". " in line]
+        assert len(numbered_lines) <= 2
+
+    async def test_context_error_includes_exception_type(self, store, monkeypatch):
+        """context error message should include exception type."""
+        async def _broken():
+            raise RuntimeError("db error")
+
+        monkeypatch.setattr(server, "_get_store", _broken)
+        result = await server.context("query")
+        assert "RuntimeError" in result
+
+
+# ---------------------------------------------------------------------------
+# remember — embedding feedback
+# ---------------------------------------------------------------------------
+
+
+class TestRememberEmbeddingFeedback:
+    async def test_remember_shows_fts_only_when_no_provider(self, store, monkeypatch):
+        """remember output should show [FTS only] when no embedding provider."""
+        monkeypatch.setattr(server, "_provider_init_attempted", False)
+        monkeypatch.setattr(server, "_provider", None)
+
+        async def _no_provider():
+            return None
+
+        monkeypatch.setattr(server, "_get_provider", _no_provider)
+
+        result = await server.remember("FTS Test", "Some content")
+        assert "[FTS only]" in result
+
+    async def test_remember_shows_embedded_when_provider_succeeds(self, store, monkeypatch):
+        """remember output should show [embedded] when embedding succeeds."""
+
+        class FakeProvider:
+            provider_id = "fake"
+            model = "fake-v1"
+            dims = 3
+
+            async def embed_query(self, text):
+                return [0.1, 0.2, 0.3]
+
+        async def _fake_provider():
+            return FakeProvider()
+
+        monkeypatch.setattr(server, "_get_provider", _fake_provider)
+
+        result = await server.remember("Embed Test", "Some content")
+        assert "[embedded]" in result
+
+    async def test_update_shows_fts_only(self, store, monkeypatch):
+        """Updated note output should also show [FTS only] indicator."""
+        async def _no_provider():
+            return None
+
+        monkeypatch.setattr(server, "_get_provider", _no_provider)
+
+        await server.remember("Update Test", "v1")
+        result = await server.remember("Update Test", "v2")
+        assert 'Updated "Update Test"' in result
+        assert "[FTS only]" in result

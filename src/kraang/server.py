@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -19,7 +19,9 @@ from kraang.formatter import (
     format_status,
     format_transcript,
 )
+from kraang.safety import format_recalled_context, looks_like_injection
 from kraang.search import build_fts_query
+from kraang.store import content_hash
 
 try:
     from kraang.embeddings import create_provider
@@ -50,45 +52,50 @@ mcp = FastMCP(
 
 _store: SQLiteStore | None = None
 _provider: EmbeddingProvider | None = None
-_provider_checked: bool = False
+_provider_init_attempted: bool = False
+_init_lock = asyncio.Lock()
 
 
 async def _get_store() -> SQLiteStore:
     """Return the initialised SQLiteStore singleton."""
     global _store
-    if _store is None:
-        from kraang.store import SQLiteStore
+    async with _init_lock:
+        if _store is None:
+            from kraang.store import SQLiteStore
 
-        db_path = resolve_db_path()
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        _store = SQLiteStore(str(db_path))
-        await _store.initialize()
+            db_path = resolve_db_path()
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            _store = SQLiteStore(str(db_path))
+            await _store.initialize()
     return _store
 
 
 async def _get_provider() -> EmbeddingProvider | None:
     """Return the embedding provider singleton, or ``None`` if unavailable."""
-    global _provider, _provider_checked
-    if _provider_checked:
-        return _provider
-    _provider_checked = True
-    if create_provider is None:
-        logger.debug("Embeddings extra not installed — semantic search disabled")
-        return None
-    try:
-        _provider = await create_provider()
-        if _provider is not None:
-            store = await _get_store()
-            await store.ensure_vec_table(_provider.dims)
-            logger.info(
-                "Embedding provider ready: %s/%s (%d dims)",
-                _provider.provider_id,
-                _provider.model,
-                _provider.dims,
-            )
-    except Exception:
-        logger.warning("Failed to initialise embedding provider", exc_info=True)
-        _provider = None
+    global _provider, _provider_init_attempted
+    async with _init_lock:
+        if _provider_init_attempted:
+            return _provider
+        if create_provider is None:
+            _provider_init_attempted = True
+            logger.debug("Embeddings extra not installed — semantic search disabled")
+            return None
+        try:
+            _provider = await create_provider()
+            if _provider is not None:
+                store = await _get_store()
+                await store.ensure_vec_table(_provider.dims)
+                logger.info(
+                    "Embedding provider ready: %s/%s (%d dims)",
+                    _provider.provider_id,
+                    _provider.model,
+                    _provider.dims,
+                )
+            _provider_init_attempted = True
+        except Exception:
+            logger.warning("Embedding provider init failed — will retry next call", exc_info=True)
+            _provider = None
+            # NOTE: do NOT set _provider_init_attempted = True here
     return _provider
 
 
@@ -130,11 +137,12 @@ async def remember(
         )
 
         # Try to embed and store the vector (non-blocking, never fails the tool)
+        embedded = False
         try:
             provider = await _get_provider()
             if provider is not None:
                 text = f"{note.title}\n{note.content}"
-                content_key = hashlib.sha256(text.encode()).hexdigest()
+                content_key = content_hash(text)
                 cached = await store.get_cached_embedding(
                     provider.provider_id, provider.model, content_key
                 )
@@ -150,6 +158,7 @@ async def remember(
                         provider.dims,
                     )
                 await store.upsert_note_embedding(note.note_id, embedding)
+                embedded = True
         except Exception:
             logger.warning("Embedding failed for note '%s' — skipping", title, exc_info=True)
 
@@ -158,9 +167,11 @@ async def remember(
             similar = await store.find_similar_titles(title, limit=3)
             # Filter out the just-created note itself
             similar = [s for s in similar if s.note_id != note.note_id]
-            return format_remember_created(note, similar if similar else None)
+            return format_remember_created(
+                note, embedded=embedded, similar=similar if similar else None
+            )
         else:
-            return format_remember_updated(note)
+            return format_remember_updated(note, embedded=embedded)
     except Exception:
         logger.exception("remember failed")
         return f'Error: could not save "{title}".'
@@ -192,6 +203,8 @@ async def recall(
             from kraang.hybrid import hybrid_search
 
             notes = await hybrid_search(store, provider, query, limit=limit)
+            # TODO: Wire in temporal decay and MMR diversity re-ranking when implemented.
+            # See .kraang/research/06-onboarding-guide.md section 9 for integration pattern.
 
         if scope in ("all", "sessions"):
             fts_expr = build_fts_query(query)
@@ -222,18 +235,21 @@ async def context(
         max_results: Maximum memories to return (default 5).
     """
     try:
-        from kraang.safety import format_recalled_context
-
         store = await _get_store()
         provider = await _get_provider()
 
         from kraang.hybrid import hybrid_search
 
         results = await hybrid_search(store, provider, query, limit=max_results)
+
+        for r in results:
+            if looks_like_injection(r.note.content):
+                logger.warning("Possible injection pattern in note '%s'", r.note.title)
+
         return format_recalled_context(results)
-    except Exception:
+    except Exception as exc:
         logger.exception("context failed")
-        return "<relevant-memories>\nError retrieving context.\n</relevant-memories>"
+        return f"<relevant-memories>\nError retrieving context: {type(exc).__name__}\n</relevant-memories>"
 
 
 @mcp.tool()
@@ -325,7 +341,14 @@ async def status() -> str:
         if provider is not None:
             embedding_status = f"{provider.provider_id}/{provider.model} ({provider.dims} dims)"
         else:
-            embedding_status = "disabled (no API key or extras not installed)"
+            # Check WHY provider is None
+            try:
+                from kraang.embeddings import create_provider as _cp  # noqa: F811
+
+                # create_provider exists, so the extras are installed
+                embedding_status = "disabled — set OPENAI_API_KEY to enable semantic search"
+            except ImportError:
+                embedding_status = "disabled — install with: pip install kraang[embeddings]"
 
         return format_status(
             active_notes=active,
