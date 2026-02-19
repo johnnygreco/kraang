@@ -68,3 +68,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.ty.environment]
 python-version = "3.10"
+
+[tool.ty.analysis]
+allowed-unresolved-imports = ["sqlite_vec"]
