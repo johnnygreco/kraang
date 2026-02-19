@@ -7,7 +7,12 @@ import re
 
 from kraang.models import NoteSearchResult
 
-__all__ = ["INJECTION_PATTERNS", "looks_like_injection", "escape_for_prompt", "format_recalled_context"]
+__all__ = [
+    "INJECTION_PATTERNS",
+    "looks_like_injection",
+    "escape_for_prompt",
+    "format_recalled_context",
+]
 
 # ---------------------------------------------------------------------------
 # Injection detection

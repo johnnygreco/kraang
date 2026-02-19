@@ -193,7 +193,10 @@ class SQLiteStore:
                 await self._db.execute("SELECT load_extension(?)", (sqlite_vec.loadable_path(),))
                 await self._db.enable_load_extension(False)
             except Exception:
-                logger.warning("sqlite-vec extension failed to load — falling back to brute-force vector search", exc_info=True)
+                logger.warning(
+                    "sqlite-vec failed to load — brute-force vector fallback",
+                    exc_info=True,
+                )
                 self._vec_loaded = False
 
         await self._db.executescript(_SCHEMA)

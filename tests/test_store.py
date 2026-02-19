@@ -519,9 +519,13 @@ class TestEmbeddingCache:
     async def test_corrupted_embedding_returns_none(self, store):
         """A corrupted BLOB in the cache should return None, not crash."""
         await store._conn.execute(
-            "INSERT INTO embedding_cache (provider, model, content_hash, embedding, dims, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            ("test", "test-model", "corrupt_hash", b"not-valid-float-data", 3, "2024-01-01T00:00:00+00:00"),
+            "INSERT INTO embedding_cache"
+            " (provider, model, content_hash, embedding, dims, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "test", "test-model", "corrupt_hash",
+                b"not-valid-float-data", 3, "2024-01-01T00:00:00+00:00",
+            ),
         )
         await store._conn.commit()
         result = await store.get_cached_embedding("test", "test-model", "corrupt_hash")

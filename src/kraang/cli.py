@@ -123,7 +123,8 @@ def init(
 
     if os.environ.get("OPENAI_API_KEY"):
         console.print(
-            "  [dim]Tip: Add OPENAI_API_KEY to .mcp.json env to enable semantic search in Claude Code[/dim]"
+            "  [dim]Tip: Add OPENAI_API_KEY to .mcp.json env"
+            " to enable semantic search in Claude Code[/dim]"
         )
 
     # 4. Create/merge .claude/settings.json with SessionEnd hook
@@ -462,7 +463,7 @@ def status_cmd() -> None:
             embedding_status = f"{provider.provider_id}/{provider.model} ({provider.dims} dims)"
         else:
             try:
-                from kraang.embeddings import create_provider as _cp  # noqa: F811
+                import kraang.embeddings  # noqa: F401
 
                 embedding_status = "disabled — set OPENAI_API_KEY to enable semantic search"
             except ImportError:

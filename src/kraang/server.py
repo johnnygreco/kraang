@@ -41,8 +41,10 @@ mcp = FastMCP(
         "A second brain for humans and their agents — "
         "project-scoped knowledge management with session indexing, full-text search, "
         "and optional semantic search. "
-        "Tools: remember (save knowledge), recall (search), context (auto-recall for prompt injection), "
-        "read_session (view transcript), forget (downweight), status (overview)."
+        "Tools: remember (save knowledge), recall (search), "
+        "context (auto-recall for prompt injection), "
+        "read_session (view transcript), forget (downweight), "
+        "status (overview)."
     ),
 )
 
@@ -249,7 +251,8 @@ async def context(
         return format_recalled_context(results)
     except Exception as exc:
         logger.exception("context failed")
-        return f"<relevant-memories>\nError retrieving context: {type(exc).__name__}\n</relevant-memories>"
+        err = type(exc).__name__
+        return f"<relevant-memories>\nError retrieving context: {err}\n</relevant-memories>"
 
 
 @mcp.tool()
@@ -343,9 +346,9 @@ async def status() -> str:
         else:
             # Check WHY provider is None
             try:
-                from kraang.embeddings import create_provider as _cp  # noqa: F811
+                import kraang.embeddings  # noqa: F401
 
-                # create_provider exists, so the extras are installed
+                # kraang.embeddings importable, so the extras are installed
                 embedding_status = "disabled — set OPENAI_API_KEY to enable semantic search"
             except ImportError:
                 embedding_status = "disabled — install with: pip install kraang[embeddings]"

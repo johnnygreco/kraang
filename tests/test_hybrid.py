@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import kraang.hybrid as hybrid_module
 import pytest
 
+import kraang.hybrid as hybrid_module
 from kraang.hybrid import bm25_score_to_normalized, hybrid_search
 from kraang.models import Note, NoteSearchResult, utcnow
-
 
 # ---------------------------------------------------------------------------
 # bm25_score_to_normalized

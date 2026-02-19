@@ -20,7 +20,9 @@ def _l2_normalize(vec: list[float]) -> list[float]:
     """Normalise a vector to unit length (L2 norm)."""
     norm = math.sqrt(sum(x * x for x in vec))
     if norm == 0.0:
-        logger.warning("Zero vector returned from embedding API — this vector will not match any queries")
+        logger.warning(
+            "Zero vector returned from embedding API — will not match any queries"
+        )
         return vec
     return [x / norm for x in vec]
 
@@ -138,7 +140,7 @@ class OpenAIEmbeddingProvider:
                         raise  # Non-retryable (401, 403, 400, etc.)
                 except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
                     last_exc = exc
-                except Exception as exc:
+                except Exception:
                     raise  # Don't retry unexpected errors
 
                 if attempt < _MAX_RETRIES:

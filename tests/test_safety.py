@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 from kraang.models import Note, NoteSearchResult, utcnow
 from kraang.safety import escape_for_prompt, format_recalled_context, looks_like_injection
-
 
 # ---------------------------------------------------------------------------
 # looks_like_injection — positive cases
@@ -118,7 +115,14 @@ class TestEscapeForPrompt:
         assert ">" not in result
         assert '"' not in result
         assert "'" not in result
-        assert "&" not in result or result.count("&") == result.count("&amp;") + result.count("&lt;") + result.count("&gt;") + result.count("&quot;") + result.count("&#x27;")
+        entity_count = (
+            result.count("&amp;")
+            + result.count("&lt;")
+            + result.count("&gt;")
+            + result.count("&quot;")
+            + result.count("&#x27;")
+        )
+        assert "&" not in result or result.count("&") == entity_count
 
     def test_empty_string(self):
         assert escape_for_prompt("") == ""
