@@ -1,7 +1,8 @@
-"""MCP server for kraang — 5 tools: remember, recall, read_session, forget, status."""
+"""MCP server for kraang — 6 tools: remember, recall, context, read_session, forget, status."""
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 from pathlib import Path
@@ -20,7 +21,13 @@ from kraang.formatter import (
 )
 from kraang.search import build_fts_query
 
+try:
+    from kraang.embeddings import create_provider
+except ImportError:
+    create_provider = None  # type: ignore[assignment]
+
 if TYPE_CHECKING:
+    from kraang.embeddings import EmbeddingProvider
     from kraang.store import SQLiteStore
 
 logger = logging.getLogger("kraang.server")
@@ -30,9 +37,10 @@ mcp = FastMCP(
     "kraang",
     instructions=(
         "A second brain for humans and their agents — "
-        "project-scoped knowledge management with session indexing and full-text search. "
-        "Tools: remember (save knowledge), recall (search), read_session (view transcript), "
-        "forget (downweight), status (overview)."
+        "project-scoped knowledge management with session indexing, full-text search, "
+        "and optional semantic search. "
+        "Tools: remember (save knowledge), recall (search), context (auto-recall for prompt injection), "
+        "read_session (view transcript), forget (downweight), status (overview)."
     ),
 )
 
@@ -41,6 +49,8 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 _store: SQLiteStore | None = None
+_provider: EmbeddingProvider | None = None
+_provider_checked: bool = False
 
 
 async def _get_store() -> SQLiteStore:
@@ -54,6 +64,32 @@ async def _get_store() -> SQLiteStore:
         _store = SQLiteStore(str(db_path))
         await _store.initialize()
     return _store
+
+
+async def _get_provider() -> EmbeddingProvider | None:
+    """Return the embedding provider singleton, or ``None`` if unavailable."""
+    global _provider, _provider_checked
+    if _provider_checked:
+        return _provider
+    _provider_checked = True
+    if create_provider is None:
+        logger.debug("Embeddings extra not installed — semantic search disabled")
+        return None
+    try:
+        _provider = await create_provider()
+        if _provider is not None:
+            store = await _get_store()
+            await store.ensure_vec_table(_provider.dims)
+            logger.info(
+                "Embedding provider ready: %s/%s (%d dims)",
+                _provider.provider_id,
+                _provider.model,
+                _provider.dims,
+            )
+    except Exception:
+        logger.warning("Failed to initialise embedding provider", exc_info=True)
+        _provider = None
+    return _provider
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +129,30 @@ async def remember(
             category=category,
         )
 
+        # Try to embed and store the vector (non-blocking, never fails the tool)
+        try:
+            provider = await _get_provider()
+            if provider is not None:
+                text = f"{note.title}\n{note.content}"
+                content_key = hashlib.sha256(text.encode()).hexdigest()
+                cached = await store.get_cached_embedding(
+                    provider.provider_id, provider.model, content_key
+                )
+                if cached is not None:
+                    embedding = cached
+                else:
+                    embedding = await provider.embed_query(text)
+                    await store.cache_embedding(
+                        provider.provider_id,
+                        provider.model,
+                        content_key,
+                        embedding,
+                        provider.dims,
+                    )
+                await store.upsert_note_embedding(note.note_id, embedding)
+        except Exception:
+            logger.warning("Embedding failed for note '%s' — skipping", title, exc_info=True)
+
         if created:
             # Check for similar existing notes (fuzzy duplicate detection)
             similar = await store.find_similar_titles(title, limit=3)
@@ -121,10 +181,7 @@ async def recall(
     """
     try:
         store = await _get_store()
-        fts_expr = build_fts_query(query)
-
-        if not fts_expr:
-            return f'No results found for "{query}".'
+        provider = await _get_provider()
 
         from kraang.models import NoteSearchResult, SessionSearchResult
 
@@ -132,15 +189,51 @@ async def recall(
         sessions: list[SessionSearchResult] = []
 
         if scope in ("all", "notes"):
-            notes = await store.search_notes(fts_expr, limit=limit)
+            from kraang.hybrid import hybrid_search
+
+            notes = await hybrid_search(store, provider, query, limit=limit)
 
         if scope in ("all", "sessions"):
-            sessions = await store.search_sessions(fts_expr, limit=limit)
+            fts_expr = build_fts_query(query)
+            if fts_expr:
+                sessions = await store.search_sessions(fts_expr, limit=limit)
+
+        if not notes and not sessions:
+            return f'No results found for "{query}".'
 
         return format_recall_results(query, notes, sessions)
     except Exception:
         logger.exception("recall failed")
         return f'Error: search for "{query}" failed.'
+
+
+@mcp.tool()
+async def context(
+    query: str,
+    max_results: int = 5,
+) -> str:
+    """Auto-recall relevant memories for context injection. Returns safety-framed XML.
+
+    Use this to inject relevant prior knowledge into your context before answering.
+    The output wraps recalled memories in a safety frame to prevent prompt injection.
+
+    Args:
+        query: Natural language query describing what context you need.
+        max_results: Maximum memories to return (default 5).
+    """
+    try:
+        from kraang.safety import format_recalled_context
+
+        store = await _get_store()
+        provider = await _get_provider()
+
+        from kraang.hybrid import hybrid_search
+
+        results = await hybrid_search(store, provider, query, limit=max_results)
+        return format_recalled_context(results)
+    except Exception:
+        logger.exception("context failed")
+        return "<relevant-memories>\nError retrieving context.\n</relevant-memories>"
 
 
 @mcp.tool()
@@ -219,6 +312,7 @@ async def status() -> str:
     """Get a knowledge base overview: counts, recent activity, tags."""
     try:
         store = await _get_store()
+        provider = await _get_provider()
 
         active, forgotten = await store.count_notes()
         session_count = await store.count_sessions()
@@ -227,6 +321,11 @@ async def status() -> str:
         categories = await store.category_counts()
         tags = await store.tag_counts()
         stale = await store.stale_notes(days=30)
+
+        if provider is not None:
+            embedding_status = f"{provider.provider_id}/{provider.model} ({provider.dims} dims)"
+        else:
+            embedding_status = "disabled (no API key or extras not installed)"
 
         return format_status(
             active_notes=active,
@@ -237,6 +336,7 @@ async def status() -> str:
             categories=categories,
             tags=tags,
             stale_notes=stale,
+            embedding_status=embedding_status,
         )
     except Exception:
         logger.exception("status failed")

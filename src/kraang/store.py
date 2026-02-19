@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import math
+import struct
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -21,6 +24,17 @@ from kraang.models import (
 )
 
 logger = logging.getLogger("kraang.store")
+
+# ---------------------------------------------------------------------------
+# sqlite-vec availability
+# ---------------------------------------------------------------------------
+
+try:
+    import sqlite_vec  # noqa: F401
+
+    _SQLITE_VEC_AVAILABLE = True
+except ImportError:
+    _SQLITE_VEC_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # SQL schema
@@ -66,6 +80,19 @@ CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
     INSERT INTO notes_fts(rowid, title, content, tags_json)
     VALUES (NEW.rowid, NEW.title, NEW.content, NEW.tags_json);
 END;
+
+-- Embedding cache
+CREATE TABLE IF NOT EXISTS embedding_cache (
+    provider     TEXT NOT NULL,
+    model        TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    embedding    BLOB NOT NULL,
+    dims         INTEGER NOT NULL,
+    created_at   TEXT NOT NULL,
+    PRIMARY KEY (provider, model, content_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_embedding_cache_created ON embedding_cache(created_at);
 
 -- Sessions table
 CREATE TABLE IF NOT EXISTS sessions (
@@ -143,6 +170,7 @@ class SQLiteStore:
         self._db_path = db_path
         self._db: aiosqlite.Connection | None = None
         self._write_lock = asyncio.Lock()
+        self._vec_available = _SQLITE_VEC_AVAILABLE
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -152,6 +180,19 @@ class SQLiteStore:
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA busy_timeout=5000")
         await self._db.execute("PRAGMA foreign_keys=ON")
+
+        # Load sqlite-vec extension if available.
+        if self._vec_available:
+            try:
+                import sqlite_vec
+
+                await self._db.enable_load_extension(True)
+                await self._db.execute("SELECT load_extension(?)", (sqlite_vec.loadable_path(),))
+                await self._db.enable_load_extension(False)
+            except Exception:
+                logger.debug("sqlite-vec extension failed to load — vector search disabled")
+                self._vec_available = False
+
         await self._db.executescript(_SCHEMA)
         await self._db.commit()
 
@@ -678,3 +719,215 @@ class SQLiteStore:
         if row is None or row["last"] is None:
             return None
         return _iso_to_dt(row["last"])
+
+    # =========================================================================
+    # EMBEDDING CACHE
+    # =========================================================================
+
+    async def get_cached_embedding(
+        self,
+        provider: str,
+        model: str,
+        content_hash: str,
+    ) -> list[float] | None:
+        """Retrieve a cached embedding, or ``None`` if not found."""
+        cur = await self._conn.execute(
+            "SELECT embedding, dims FROM embedding_cache "
+            "WHERE provider = ? AND model = ? AND content_hash = ?",
+            (provider, model, content_hash),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return list(struct.unpack(f"<{row['dims']}f", row["embedding"]))
+
+    async def cache_embedding(
+        self,
+        provider: str,
+        model: str,
+        content_hash: str,
+        embedding: list[float],
+        dims: int,
+    ) -> None:
+        """Store an embedding in the cache."""
+        blob = struct.pack(f"<{dims}f", *embedding)
+        now = _dt_to_iso(utcnow())
+        async with self._write_lock:
+            await self._conn.execute(
+                "INSERT OR REPLACE INTO embedding_cache "
+                "(provider, model, content_hash, embedding, dims, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (provider, model, content_hash, blob, dims, now),
+            )
+            await self._conn.commit()
+
+    async def prune_embedding_cache(self, max_entries: int = 10000) -> int:
+        """Remove oldest entries if cache exceeds *max_entries*. Returns count removed."""
+        cur = await self._conn.execute("SELECT COUNT(*) AS cnt FROM embedding_cache")
+        row = await cur.fetchone()
+        total = row["cnt"] if row else 0
+        if total <= max_entries:
+            return 0
+
+        to_remove = total - max_entries
+        async with self._write_lock:
+            await self._conn.execute(
+                "DELETE FROM embedding_cache WHERE rowid IN ("
+                "  SELECT rowid FROM embedding_cache ORDER BY created_at ASC LIMIT ?"
+                ")",
+                (to_remove,),
+            )
+            await self._conn.commit()
+        return to_remove
+
+    # =========================================================================
+    # VECTOR SEARCH
+    # =========================================================================
+
+    async def ensure_vec_table(self, dims: int) -> None:
+        """Create the ``notes_vec`` virtual table if it doesn't exist.
+
+        No-op when sqlite-vec is unavailable.
+        """
+        if not self._vec_available:
+            logger.debug("sqlite-vec not available — skipping notes_vec creation")
+            return
+        async with self._write_lock:
+            try:
+                await self._conn.execute(
+                    f"CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec "
+                    f"USING vec0(note_id TEXT PRIMARY KEY, embedding float[{dims}])"
+                )
+                await self._conn.commit()
+            except Exception:
+                logger.warning("Failed to create notes_vec table", exc_info=True)
+                self._vec_available = False
+
+    async def upsert_note_embedding(self, note_id: str, embedding: list[float]) -> None:
+        """Insert or update the vector for a note."""
+        blob = struct.pack(f"<{len(embedding)}f", *embedding)
+        async with self._write_lock:
+            if self._vec_available:
+                # vec0 doesn't support ON CONFLICT — delete then insert.
+                await self._conn.execute("DELETE FROM notes_vec WHERE note_id = ?", (note_id,))
+                await self._conn.execute(
+                    "INSERT INTO notes_vec (note_id, embedding) VALUES (?, ?)",
+                    (note_id, blob),
+                )
+            else:
+                # Fallback: store in embedding_cache keyed by note_id.
+                now = _dt_to_iso(utcnow())
+                dims = len(embedding)
+                await self._conn.execute(
+                    "INSERT OR REPLACE INTO embedding_cache "
+                    "(provider, model, content_hash, embedding, dims, created_at) "
+                    "VALUES ('_vec', '_fallback', ?, ?, ?, ?)",
+                    (note_id, blob, dims, now),
+                )
+            await self._conn.commit()
+
+    async def search_notes_vector(
+        self,
+        query_embedding: list[float],
+        limit: int = 10,
+    ) -> list[NoteSearchResult]:
+        """Search notes by vector similarity.
+
+        Uses sqlite-vec when available, otherwise falls back to brute-force
+        cosine similarity over cached embeddings.
+        """
+        if self._vec_available:
+            return await self._search_vec_native(query_embedding, limit)
+        return await self._search_vec_bruteforce(query_embedding, limit)
+
+    # -- native sqlite-vec search --------------------------------------------
+
+    async def _search_vec_native(
+        self,
+        query_embedding: list[float],
+        limit: int,
+    ) -> list[NoteSearchResult]:
+        """Vector search via sqlite-vec ``vec_distance_cosine``."""
+        try:
+            blob = struct.pack(f"<{len(query_embedding)}f", *query_embedding)
+            sql = """
+                SELECT v.note_id, vec_distance_cosine(v.embedding, ?) AS dist
+                FROM notes_vec v
+                JOIN notes n ON n.note_id = v.note_id
+                WHERE n.relevance > 0.0
+                ORDER BY dist ASC
+                LIMIT ?
+            """
+            cur = await self._conn.execute(sql, (blob, limit))
+            rows = await cur.fetchall()
+
+            results: list[NoteSearchResult] = []
+            for row in rows:
+                note = await self.get_note(row["note_id"])
+                if note is None:
+                    continue
+                score = (1.0 - row["dist"]) * note.relevance
+                results.append(NoteSearchResult(note=note, score=score, snippet=""))
+            return results
+        except Exception:
+            logger.warning("Native vector search failed", exc_info=True)
+            return []
+
+    # -- brute-force fallback ------------------------------------------------
+
+    async def _search_vec_bruteforce(
+        self,
+        query_embedding: list[float],
+        limit: int,
+    ) -> list[NoteSearchResult]:
+        """Brute-force cosine similarity over embeddings in the cache."""
+        try:
+            cur = await self._conn.execute(
+                "SELECT content_hash AS note_id, embedding, dims "
+                "FROM embedding_cache WHERE provider = '_vec' AND model = '_fallback'"
+            )
+            rows = await cur.fetchall()
+            if not rows:
+                return []
+
+            scored: list[tuple[str, float]] = []
+            for row in rows:
+                vec = list(struct.unpack(f"<{row['dims']}f", row["embedding"]))
+                sim = _cosine_similarity(query_embedding, vec)
+                scored.append((row["note_id"], sim))
+
+            scored.sort(key=lambda t: t[1], reverse=True)
+
+            results: list[NoteSearchResult] = []
+            for note_id, sim in scored[:limit]:
+                note = await self.get_note(note_id)
+                if note is None or note.relevance <= 0.0:
+                    continue
+                score = sim * note.relevance
+                results.append(NoteSearchResult(note=note, score=score, snippet=""))
+            return results
+        except Exception:
+            logger.warning("Brute-force vector search failed", exc_info=True)
+            return []
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    if len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def content_hash(text: str) -> str:
+    """SHA-256 hash of text content, for embedding cache keys."""
+    return hashlib.sha256(text.encode()).hexdigest()

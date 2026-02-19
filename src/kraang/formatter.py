@@ -239,16 +239,20 @@ def format_status(
     categories: dict[str, int],
     tags: dict[str, int],
     stale_notes: list[Note],
+    embedding_status: str = "",
 ) -> str:
     """Format the status overview as markdown."""
     parts: list[str] = ["## Kraang Status\n"]
 
     # Counts
+    total_notes = active_notes + forgotten_notes
     parts.append(
-        f"**Notes:** {active_notes} total ({active_notes} active, {forgotten_notes} forgotten)"
+        f"**Notes:** {total_notes} total ({active_notes} active, {forgotten_notes} forgotten)"
     )
     indexed_str = _format_date(last_indexed) if last_indexed else "never"
     parts.append(f"**Sessions indexed:** {session_count} (last indexed: {indexed_str})")
+    if embedding_status:
+        parts.append(f"**Embeddings:** {embedding_status}")
 
     # Recent notes
     if recent_notes:

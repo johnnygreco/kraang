@@ -437,3 +437,142 @@ class TestEdgeCases:
         async with SQLiteStore(str(tmp_db_path)) as s:
             note, _ = await s.upsert_note("Context manager test", "Content")
             assert note.note_id
+
+
+# ---------------------------------------------------------------------------
+# Embedding cache
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddingCache:
+    async def test_store_and_retrieve(self, store):
+        embedding = [0.1, 0.2, 0.3, 0.4]
+        await store.cache_embedding("openai", "text-embedding-3-small", "hash123", embedding, 4)
+
+        cached = await store.get_cached_embedding("openai", "text-embedding-3-small", "hash123")
+        assert cached is not None
+        import pytest
+
+        assert cached == pytest.approx(embedding, abs=1e-6)
+
+    async def test_cache_miss(self, store):
+        cached = await store.get_cached_embedding("openai", "model", "nonexistent")
+        assert cached is None
+
+    async def test_cache_different_provider(self, store):
+        embedding = [0.5, 0.5]
+        await store.cache_embedding("openai", "model-a", "hash1", embedding, 2)
+
+        # Different provider should miss
+        assert await store.get_cached_embedding("cohere", "model-a", "hash1") is None
+        # Different model should miss
+        assert await store.get_cached_embedding("openai", "model-b", "hash1") is None
+        # Same combo should hit
+        assert await store.get_cached_embedding("openai", "model-a", "hash1") is not None
+
+    async def test_cache_replace(self, store):
+        await store.cache_embedding("p", "m", "h", [1.0, 2.0], 2)
+        await store.cache_embedding("p", "m", "h", [3.0, 4.0], 2)
+
+        cached = await store.get_cached_embedding("p", "m", "h")
+        assert cached is not None
+        import pytest
+
+        assert cached == pytest.approx([3.0, 4.0], abs=1e-6)
+
+    async def test_prune_no_op_under_limit(self, store):
+        await store.cache_embedding("p", "m", "h1", [1.0], 1)
+        removed = await store.prune_embedding_cache(max_entries=100)
+        assert removed == 0
+
+    async def test_prune_removes_oldest(self, store):
+        for i in range(5):
+            await store.cache_embedding("p", "m", f"h{i}", [float(i)], 1)
+
+        removed = await store.prune_embedding_cache(max_entries=3)
+        assert removed == 2
+
+        # The oldest two (h0, h1) should be gone
+        assert await store.get_cached_embedding("p", "m", "h0") is None
+        assert await store.get_cached_embedding("p", "m", "h1") is None
+        # The newest three should remain
+        assert await store.get_cached_embedding("p", "m", "h2") is not None
+        assert await store.get_cached_embedding("p", "m", "h3") is not None
+        assert await store.get_cached_embedding("p", "m", "h4") is not None
+
+
+# ---------------------------------------------------------------------------
+# Vector search (brute-force fallback)
+# ---------------------------------------------------------------------------
+
+
+class TestVectorSearch:
+    async def test_search_empty(self, store):
+        results = await store.search_notes_vector([0.1, 0.2, 0.3], limit=5)
+        assert results == []
+
+    async def test_upsert_and_search_bruteforce(self, store):
+        """Test upsert_note_embedding + search_notes_vector with brute-force fallback."""
+        # Create a note first
+        note, _ = await store.upsert_note("Vector test", "Content about vectors")
+
+        # Store an embedding for it (uses fallback path since sqlite-vec not loaded)
+        embedding = [0.6, 0.8, 0.0]
+        await store.upsert_note_embedding(note.note_id, embedding)
+
+        # Search with a similar vector
+        query = [0.6, 0.8, 0.0]
+        results = await store.search_notes_vector(query, limit=5)
+        assert len(results) > 0
+        assert results[0].note.note_id == note.note_id
+        assert results[0].score > 0.0
+
+    async def test_bruteforce_excludes_forgotten(self, store):
+        note, _ = await store.upsert_note("Forgotten vec", "Content")
+        await store.upsert_note_embedding(note.note_id, [1.0, 0.0])
+        await store.set_relevance("Forgotten vec", 0.0)
+
+        results = await store.search_notes_vector([1.0, 0.0], limit=5)
+        assert len(results) == 0
+
+    async def test_bruteforce_multiple_results(self, store):
+        n1, _ = await store.upsert_note("Vec A", "Content A")
+        n2, _ = await store.upsert_note("Vec B", "Content B")
+
+        await store.upsert_note_embedding(n1.note_id, [1.0, 0.0, 0.0])
+        await store.upsert_note_embedding(n2.note_id, [0.0, 1.0, 0.0])
+
+        # Query closer to n1
+        results = await store.search_notes_vector([0.9, 0.1, 0.0], limit=5)
+        assert len(results) == 2
+        assert results[0].note.note_id == n1.note_id
+
+
+# ---------------------------------------------------------------------------
+# Note embedding upsert
+# ---------------------------------------------------------------------------
+
+
+class TestNoteEmbedding:
+    async def test_upsert_creates_entry(self, store):
+        note, _ = await store.upsert_note("Embed test", "Content")
+        await store.upsert_note_embedding(note.note_id, [0.1, 0.2, 0.3])
+
+        # Verify it's searchable
+        results = await store.search_notes_vector([0.1, 0.2, 0.3], limit=1)
+        assert len(results) == 1
+
+    async def test_upsert_replaces_embedding(self, store):
+        note, _ = await store.upsert_note("Replace embed", "Content")
+        await store.upsert_note_embedding(note.note_id, [1.0, 0.0, 0.0])
+        await store.upsert_note_embedding(note.note_id, [0.0, 1.0, 0.0])
+
+        # Search with new embedding direction
+        results = await store.search_notes_vector([0.0, 1.0, 0.0], limit=1)
+        assert len(results) == 1
+        assert results[0].note.note_id == note.note_id
+
+    async def test_ensure_vec_table_no_op_without_vec(self, store):
+        """ensure_vec_table should be a no-op when sqlite-vec is unavailable."""
+        store._vec_available = False
+        await store.ensure_vec_table(1536)  # Should not raise

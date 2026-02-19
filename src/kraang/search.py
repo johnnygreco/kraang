@@ -5,6 +5,26 @@ from __future__ import annotations
 import re
 
 # ---------------------------------------------------------------------------
+# Stop words — filtered out during keyword extraction for conversational queries.
+# ---------------------------------------------------------------------------
+
+STOP_WORDS: set[str] = {
+    "a", "about", "after", "all", "also", "an", "and", "any", "are", "as",
+    "at", "be", "been", "before", "being", "between", "but", "by", "can",
+    "could", "did", "do", "does", "done", "down", "each", "even", "for",
+    "from", "get", "got", "had", "has", "have", "he", "her", "here", "him",
+    "his", "how", "if", "in", "into", "is", "it", "its", "just", "let",
+    "like", "may", "me", "might", "more", "most", "much", "must", "my",
+    "no", "nor", "not", "now", "of", "on", "once", "only", "or", "other",
+    "our", "out", "over", "own", "same", "she", "should", "so", "some",
+    "still", "such", "than", "that", "the", "their", "them", "then",
+    "there", "these", "they", "this", "those", "through", "to", "too",
+    "under", "up", "upon", "very", "was", "we", "were", "what", "when",
+    "where", "which", "while", "who", "whom", "why", "will", "with",
+    "would", "yet", "you", "your",
+}
+
+# ---------------------------------------------------------------------------
 # FTS5 special characters that need to be stripped from bare terms.
 # ---------------------------------------------------------------------------
 
@@ -100,3 +120,26 @@ def build_fts_query(raw: str) -> str:
 
     result = " ".join(parts)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Keyword extraction (for hybrid / expanded search)
+# ---------------------------------------------------------------------------
+
+
+def extract_keywords(query: str) -> list[str]:
+    """Tokenize *query* and return meaningful keywords.
+
+    Filters out stop words, boolean operators, and tokens shorter than 3 chars.
+    Preserves the original token order with duplicates removed.
+    """
+    tokens = re.findall(r"[\w]+", query.lower())
+    seen: set[str] = set()
+    keywords: list[str] = []
+    for tok in tokens:
+        if len(tok) < 3 or tok in STOP_WORDS or tok.upper() in _BOOLEAN_OPS:
+            continue
+        if tok not in seen:
+            seen.add(tok)
+            keywords.append(tok)
+    return keywords
