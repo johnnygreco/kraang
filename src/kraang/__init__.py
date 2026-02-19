@@ -7,7 +7,6 @@ try:
 except ImportError:
     __version__ = "0.0.0"
 
-from kraang.hybrid import HybridConfig
 from kraang.models import (
     Note,
     NoteSearchResult,
@@ -19,7 +18,6 @@ from kraang.models import (
 from kraang.store import SQLiteStore
 
 __all__ = [
-    "HybridConfig",
     "Note",
     "NoteSearchResult",
     "SQLiteStore",

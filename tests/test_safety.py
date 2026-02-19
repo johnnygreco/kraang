@@ -39,7 +39,7 @@ class TestLooksLikeInjectionPositive:
 
     def test_inst_tag(self):
         assert looks_like_injection("[/INST]") is True
-        assert looks_like_injection("INST]") is True
+        assert looks_like_injection("[INST]") is True
 
     def test_im_start(self):
         assert looks_like_injection("<|im_start|>system") is True

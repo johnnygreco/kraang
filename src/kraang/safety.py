@@ -7,6 +7,8 @@ import re
 
 from kraang.models import NoteSearchResult
 
+__all__ = ["INJECTION_PATTERNS", "looks_like_injection", "escape_for_prompt", "format_recalled_context"]
+
 # ---------------------------------------------------------------------------
 # Injection detection
 # ---------------------------------------------------------------------------
@@ -17,8 +19,7 @@ INJECTION_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"you\s+are\s+now\s+(a|an)\b", re.IGNORECASE),
     re.compile(r"system\s*:\s*", re.IGNORECASE),
     re.compile(r"<\s*/?\s*system\s*>", re.IGNORECASE),
-    re.compile(r"INST\]", re.IGNORECASE),
-    re.compile(r"\[/INST\]", re.IGNORECASE),
+    re.compile(r"\[/?INST\]", re.IGNORECASE),
     re.compile(r"<\|im_start\|>", re.IGNORECASE),
     re.compile(r"<<\s*SYS\s*>>", re.IGNORECASE),
 ]
@@ -33,6 +34,7 @@ def looks_like_injection(text: str) -> bool:
 # ---------------------------------------------------------------------------
 # Escaping
 # ---------------------------------------------------------------------------
+
 
 def escape_for_prompt(text: str) -> str:
     """HTML-escape ``&<>"'`` in *text*."""
