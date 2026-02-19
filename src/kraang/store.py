@@ -29,12 +29,15 @@ logger = logging.getLogger("kraang.store")
 # sqlite-vec availability
 # ---------------------------------------------------------------------------
 
+# True if `import sqlite_vec` succeeded at module load time. Does NOT guarantee
+# the extension loads into a specific connection — check self._vec_loaded after initialize().
+_SQLITE_VEC_IMPORTABLE = False
 try:
     import sqlite_vec  # noqa: F401
 
-    _SQLITE_VEC_AVAILABLE = True
+    _SQLITE_VEC_IMPORTABLE = True
 except ImportError:
-    _SQLITE_VEC_AVAILABLE = False
+    pass
 
 # ---------------------------------------------------------------------------
 # SQL schema
@@ -170,7 +173,7 @@ class SQLiteStore:
         self._db_path = db_path
         self._db: aiosqlite.Connection | None = None
         self._write_lock = asyncio.Lock()
-        self._vec_available = _SQLITE_VEC_AVAILABLE
+        self._vec_loaded = _SQLITE_VEC_IMPORTABLE
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -182,7 +185,7 @@ class SQLiteStore:
         await self._db.execute("PRAGMA foreign_keys=ON")
 
         # Load sqlite-vec extension if available.
-        if self._vec_available:
+        if self._vec_loaded:
             try:
                 import sqlite_vec
 
@@ -190,8 +193,8 @@ class SQLiteStore:
                 await self._db.execute("SELECT load_extension(?)", (sqlite_vec.loadable_path(),))
                 await self._db.enable_load_extension(False)
             except Exception:
-                logger.debug("sqlite-vec extension failed to load — vector search disabled")
-                self._vec_available = False
+                logger.warning("sqlite-vec extension failed to load — falling back to brute-force vector search", exc_info=True)
+                self._vec_loaded = False
 
         await self._db.executescript(_SCHEMA)
         await self._db.commit()
@@ -739,7 +742,11 @@ class SQLiteStore:
         row = await cur.fetchone()
         if row is None:
             return None
-        return list(struct.unpack(f"<{row['dims']}f", row["embedding"]))
+        try:
+            return list(struct.unpack(f"<{row['dims']}f", row["embedding"]))
+        except struct.error:
+            logger.warning("Corrupted embedding cache entry for hash %s — skipping", content_hash)
+            return None
 
     async def cache_embedding(
         self,
@@ -761,25 +768,6 @@ class SQLiteStore:
             )
             await self._conn.commit()
 
-    async def prune_embedding_cache(self, max_entries: int = 10000) -> int:
-        """Remove oldest entries if cache exceeds *max_entries*. Returns count removed."""
-        cur = await self._conn.execute("SELECT COUNT(*) AS cnt FROM embedding_cache")
-        row = await cur.fetchone()
-        total = row["cnt"] if row else 0
-        if total <= max_entries:
-            return 0
-
-        to_remove = total - max_entries
-        async with self._write_lock:
-            await self._conn.execute(
-                "DELETE FROM embedding_cache WHERE rowid IN ("
-                "  SELECT rowid FROM embedding_cache ORDER BY created_at ASC LIMIT ?"
-                ")",
-                (to_remove,),
-            )
-            await self._conn.commit()
-        return to_remove
-
     # =========================================================================
     # VECTOR SEARCH
     # =========================================================================
@@ -789,7 +777,7 @@ class SQLiteStore:
 
         No-op when sqlite-vec is unavailable.
         """
-        if not self._vec_available:
+        if not self._vec_loaded:
             logger.debug("sqlite-vec not available — skipping notes_vec creation")
             return
         async with self._write_lock:
@@ -801,13 +789,13 @@ class SQLiteStore:
                 await self._conn.commit()
             except Exception:
                 logger.warning("Failed to create notes_vec table", exc_info=True)
-                self._vec_available = False
+                self._vec_loaded = False
 
     async def upsert_note_embedding(self, note_id: str, embedding: list[float]) -> None:
         """Insert or update the vector for a note."""
         blob = struct.pack(f"<{len(embedding)}f", *embedding)
         async with self._write_lock:
-            if self._vec_available:
+            if self._vec_loaded:
                 # vec0 doesn't support ON CONFLICT — delete then insert.
                 await self._conn.execute("DELETE FROM notes_vec WHERE note_id = ?", (note_id,))
                 await self._conn.execute(
@@ -815,7 +803,11 @@ class SQLiteStore:
                     (note_id, blob),
                 )
             else:
-                # Fallback: store in embedding_cache keyed by note_id.
+                # Fallback: Reuse embedding_cache table to store note vectors when
+                # sqlite-vec is unavailable. Sentinel values '_vec'/'_fallback' distinguish
+                # these from real API-response cache entries. The content_hash column
+                # holds the note_id (not an actual content hash) in this case.
+                # See also _search_vec_bruteforce() which queries these sentinel entries.
                 now = _dt_to_iso(utcnow())
                 dims = len(embedding)
                 await self._conn.execute(
@@ -836,7 +828,7 @@ class SQLiteStore:
         Uses sqlite-vec when available, otherwise falls back to brute-force
         cosine similarity over cached embeddings.
         """
-        if self._vec_available:
+        if self._vec_loaded:
             return await self._search_vec_native(query_embedding, limit)
         return await self._search_vec_bruteforce(query_embedding, limit)
 
@@ -866,7 +858,9 @@ class SQLiteStore:
                 note = await self.get_note(row["note_id"])
                 if note is None:
                     continue
-                score = (1.0 - row["dist"]) * note.relevance
+                # vec_distance_cosine returns 1 - cosine_similarity, ranging from
+                # 0 (identical) to 2 (opposite). Clamp to avoid negative scores.
+                score = max(0.0, 1.0 - row["dist"]) * note.relevance
                 results.append(NoteSearchResult(note=note, score=score, snippet=""))
             return results
         except Exception:
@@ -892,14 +886,20 @@ class SQLiteStore:
 
             scored: list[tuple[str, float]] = []
             for row in rows:
-                vec = list(struct.unpack(f"<{row['dims']}f", row["embedding"]))
+                try:
+                    vec = list(struct.unpack(f"<{row['dims']}f", row["embedding"]))
+                except struct.error:
+                    logger.warning("Corrupted embedding in bruteforce search — skipping entry")
+                    continue
                 sim = _cosine_similarity(query_embedding, vec)
                 scored.append((row["note_id"], sim))
 
             scored.sort(key=lambda t: t[1], reverse=True)
 
             results: list[NoteSearchResult] = []
-            for note_id, sim in scored[:limit]:
+            for note_id, sim in scored:
+                if len(results) >= limit:
+                    break
                 note = await self.get_note(note_id)
                 if note is None or note.relevance <= 0.0:
                     continue
@@ -929,5 +929,9 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 def content_hash(text: str) -> str:
-    """SHA-256 hash of text content, for embedding cache keys."""
+    """SHA-256 hash of text content, for embedding cache keys.
+
+    This is the canonical hashing function — server.py imports this
+    rather than computing hashes inline.
+    """
     return hashlib.sha256(text.encode()).hexdigest()

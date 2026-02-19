@@ -4,10 +4,34 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from kraang.config import normalize_title
 from kraang.models import Session, utcnow
 from kraang.search import build_fts_query
-from kraang.store import SQLiteStore
+from kraang.store import SQLiteStore, _cosine_similarity
+
+# ---------------------------------------------------------------------------
+# Cosine similarity edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestCosineSimilarity:
+    def test_identical_vectors(self):
+        assert _cosine_similarity([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
+
+    def test_orthogonal_vectors(self):
+        assert _cosine_similarity([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
+
+    def test_mismatched_dimensions(self):
+        assert _cosine_similarity([1.0, 0.0], [1.0, 0.0, 0.0]) == 0.0
+
+    def test_zero_vectors(self):
+        assert _cosine_similarity([0.0, 0.0], [0.0, 0.0]) == 0.0
+
+    def test_opposite_vectors(self):
+        assert _cosine_similarity([1.0, 0.0], [-1.0, 0.0]) == pytest.approx(-1.0)
+
 
 # ---------------------------------------------------------------------------
 # Note upsert
@@ -433,6 +457,18 @@ class TestEdgeCases:
         ids = {note.note_id for note, _ in results}
         assert len(ids) == 10
 
+    async def test_corrupted_tags_json_fallback(self, store):
+        """Corrupted tags_json should fall back to empty list, not crash."""
+        note, _ = await store.upsert_note("CorruptTags", "Content", tags=["a"])
+        await store._conn.execute(
+            "UPDATE notes SET tags_json = 'not-valid-json' WHERE note_id = ?",
+            (note.note_id,),
+        )
+        await store._conn.commit()
+        loaded = await store.get_note(note.note_id)
+        assert loaded is not None
+        assert loaded.tags == []  # Graceful fallback
+
     async def test_context_manager(self, tmp_db_path):
         async with SQLiteStore(str(tmp_db_path)) as s:
             note, _ = await s.upsert_note("Context manager test", "Content")
@@ -480,25 +516,16 @@ class TestEmbeddingCache:
 
         assert cached == pytest.approx([3.0, 4.0], abs=1e-6)
 
-    async def test_prune_no_op_under_limit(self, store):
-        await store.cache_embedding("p", "m", "h1", [1.0], 1)
-        removed = await store.prune_embedding_cache(max_entries=100)
-        assert removed == 0
-
-    async def test_prune_removes_oldest(self, store):
-        for i in range(5):
-            await store.cache_embedding("p", "m", f"h{i}", [float(i)], 1)
-
-        removed = await store.prune_embedding_cache(max_entries=3)
-        assert removed == 2
-
-        # The oldest two (h0, h1) should be gone
-        assert await store.get_cached_embedding("p", "m", "h0") is None
-        assert await store.get_cached_embedding("p", "m", "h1") is None
-        # The newest three should remain
-        assert await store.get_cached_embedding("p", "m", "h2") is not None
-        assert await store.get_cached_embedding("p", "m", "h3") is not None
-        assert await store.get_cached_embedding("p", "m", "h4") is not None
+    async def test_corrupted_embedding_returns_none(self, store):
+        """A corrupted BLOB in the cache should return None, not crash."""
+        await store._conn.execute(
+            "INSERT INTO embedding_cache (provider, model, content_hash, embedding, dims, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("test", "test-model", "corrupt_hash", b"not-valid-float-data", 3, "2024-01-01T00:00:00+00:00"),
+        )
+        await store._conn.commit()
+        result = await store.get_cached_embedding("test", "test-model", "corrupt_hash")
+        assert result is None  # Should not crash
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +561,32 @@ class TestVectorSearch:
 
         results = await store.search_notes_vector([1.0, 0.0], limit=5)
         assert len(results) == 0
+
+    async def test_bruteforce_skips_forgotten_notes(self, store):
+        """Brute-force search should skip forgotten notes and fill the limit."""
+        # Create 5 notes with embeddings
+        notes = []
+        for i in range(5):
+            n, _ = await store.upsert_note(f"BF Note {i}", f"Content {i}")
+            # Assign embeddings that spread across a dimension so we control ranking
+            emb = [0.0] * 5
+            emb[i] = 1.0
+            await store.upsert_note_embedding(n.note_id, emb)
+            notes.append(n)
+
+        # Forget the top-2 ranked notes (closest to query)
+        # Query will be [1,1,1,1,1] so all are equally similar; forget first two
+        await store.set_relevance(notes[0].title, 0.0)
+        await store.set_relevance(notes[1].title, 0.0)
+
+        # Request limit=3 — should get 3 results despite 2 forgotten notes
+        query = [1.0, 1.0, 1.0, 1.0, 1.0]
+        results = await store.search_notes_vector(query, limit=3)
+        assert len(results) == 3
+        result_ids = {r.note.note_id for r in results}
+        # The forgotten notes should NOT appear
+        assert notes[0].note_id not in result_ids
+        assert notes[1].note_id not in result_ids
 
     async def test_bruteforce_multiple_results(self, store):
         n1, _ = await store.upsert_note("Vec A", "Content A")
@@ -574,5 +627,5 @@ class TestNoteEmbedding:
 
     async def test_ensure_vec_table_no_op_without_vec(self, store):
         """ensure_vec_table should be a no-op when sqlite-vec is unavailable."""
-        store._vec_available = False
+        store._vec_loaded = False
         await store.ensure_vec_table(1536)  # Should not raise
