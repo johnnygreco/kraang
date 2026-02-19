@@ -28,12 +28,52 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _backup_file(path: Path) -> Path:
-    """Create a timestamped backup of *path* and return the backup path."""
+def _backup_file(path: Path, kraang_dir: Path) -> Path:
+    """Create a timestamped backup of *path* inside .kraang/backups/."""
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    backup = path.parent / f"{path.name}.{ts}.bak"
+    backup_dir = kraang_dir / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup = backup_dir / f"{path.name}.{ts}.bak"
     shutil.copy2(path, backup)
     return backup
+
+
+_KRAANG_RULES = """\
+# Kraang — Second Brain
+
+You have access to the **kraang** MCP server, a persistent knowledge base.
+Use it proactively throughout every session.
+
+## When to save notes
+
+Use `remember` whenever you encounter:
+
+- **Key decisions** — architecture choices, trade-offs considered, why option A was picked over B
+- **Debugging breakthroughs** — root causes found, non-obvious fixes, "gotchas" for this codebase
+- **Patterns & conventions** — coding patterns, naming conventions, or project-specific idioms
+- **Environment & setup** — dependency quirks, config requirements, toolchain details
+- **User preferences** — the user's preferred style, tools, or workflow patterns
+- **Reusable knowledge** — anything that would save time if recalled in a future session
+
+## How to write good notes
+
+- Use a clear, searchable `title` (e.g., "pytest-asyncio requires auto mode in this repo")
+- Write `content` that your future self (or another agent) can act on without extra context
+- Add relevant `tags` (e.g., `["python", "testing", "pytest"]`)
+- Use `category` to group by domain (e.g., `"debugging"`, `"architecture"`, `"setup"`)
+
+## When to search
+
+- At the **start of a session**, use `recall` to search for related notes
+- Before tackling a **new problem**, search for related past insights
+- When the user asks about something that **might have been solved before**
+
+## Housekeeping
+
+- When you notice a note is outdated, update it with `remember` (same title)
+- Use `forget` to downweight notes that are no longer relevant
+- Use `status` to check for stale notes periodically
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -53,19 +93,36 @@ def init(
 
     console.print(f"Initializing kraang in [bold]{root}[/bold]...\n")
 
+    _markers = (".git", "pyproject.toml", "package.json", "Cargo.toml")
+    if not any((root / m).exists() for m in _markers):
+        console.print(
+            "  [yellow]![/yellow] No project root marker found "
+            "(.git, pyproject.toml, etc.). Using current directory.\n"
+        )
+
     # 1. Create .kraang/ directory and database
     kraang_dir = root / ".kraang"
-    kraang_dir.mkdir(exist_ok=True)
     db_path = kraang_dir / "kraang.db"
+    db_existed = db_path.exists()
 
-    # Initialize the database schema
-    async def _init_db() -> None:
-        from kraang.store import SQLiteStore
+    try:
+        kraang_dir.mkdir(exist_ok=True)
 
-        async with SQLiteStore(str(db_path)):
-            pass  # Schema created on initialize
+        async def _init_db() -> None:
+            from kraang.store import SQLiteStore
 
-    _run(_init_db())
+            async with SQLiteStore(str(db_path)):
+                pass  # Schema created on initialize
+
+        _run(_init_db())
+    except (PermissionError, OSError) as exc:
+        console.print(f"  [red]✗[/red] Failed to create database: {exc}")
+        raise typer.Exit(1) from None
+
+    if db_existed:
+        console.print("  [dim]=[/dim] Database already exists")
+    else:
+        console.print("  [green]+[/green] Database created")
 
     # 2. Add .kraang/ to .gitignore
     gitignore = root / ".gitignore"
@@ -84,6 +141,8 @@ def init(
 
     if gitignore_updated:
         console.print("  [green]+[/green] .gitignore updated")
+    else:
+        console.print("  [dim]=[/dim] .gitignore already configured")
 
     # 3. Create/merge .mcp.json
     mcp_json_path = root / ".mcp.json"
@@ -98,6 +157,7 @@ def init(
     }
 
     mcp_json_updated = False
+    mcp_json_refreshed = False
     if mcp_json_path.exists():
         try:
             existing = json.loads(mcp_json_path.read_text())
@@ -107,8 +167,13 @@ def init(
                 existing["mcpServers"]["kraang"] = mcp_config["mcpServers"]["kraang"]
                 mcp_json_path.write_text(json.dumps(existing, indent=2) + "\n")
                 mcp_json_updated = True
+            elif existing["mcpServers"]["kraang"] != mcp_config["mcpServers"]["kraang"]:
+                existing["mcpServers"]["kraang"] = mcp_config["mcpServers"]["kraang"]
+                mcp_json_path.write_text(json.dumps(existing, indent=2) + "\n")
+                mcp_json_updated = True
+                mcp_json_refreshed = True
         except (json.JSONDecodeError, KeyError):
-            backup = _backup_file(mcp_json_path)
+            backup = _backup_file(mcp_json_path, kraang_dir)
             mcp_json_path.write_text(json.dumps(mcp_config, indent=2) + "\n")
             mcp_json_updated = True
             console.print(f"  [yellow]![/yellow] Corrupt .mcp.json backed up to {backup}")
@@ -116,8 +181,12 @@ def init(
         mcp_json_path.write_text(json.dumps(mcp_config, indent=2) + "\n")
         mcp_json_updated = True
 
-    if mcp_json_updated:
+    if mcp_json_refreshed:
+        console.print("  [yellow]~[/yellow] .mcp.json updated (kraang config refreshed)")
+    elif mcp_json_updated:
         console.print("  [green]+[/green] .mcp.json configured")
+    else:
+        console.print("  [dim]=[/dim] .mcp.json already configured")
 
     # 4. Create/merge .claude/settings.json with SessionEnd hook
     claude_dir = root / ".claude"
@@ -166,7 +235,7 @@ def init(
                     settings_path.write_text(json.dumps(existing, indent=2) + "\n")
                     hook_configured = True
         except (json.JSONDecodeError, KeyError):
-            backup = _backup_file(settings_path)
+            backup = _backup_file(settings_path, kraang_dir)
             settings_path.write_text(json.dumps(hook_config, indent=2) + "\n")
             hook_configured = True
             console.print(f"  [yellow]![/yellow] Corrupt settings.json backed up to {backup}")
@@ -176,10 +245,10 @@ def init(
 
     if hook_configured:
         console.print("  [green]+[/green] SessionEnd hook configured")
+    else:
+        console.print("  [dim]=[/dim] SessionEnd hook already configured")
 
     # 5. Run initial index
-    console.print("\n  Indexing existing sessions...")
-
     async def _index() -> int:
         from kraang.indexer import index_sessions
         from kraang.store import SQLiteStore
@@ -187,13 +256,32 @@ def init(
         async with SQLiteStore(str(db_path)) as store:
             return await index_sessions(store, project_path=root)
 
-    sessions_indexed = _run(_index())
+    try:
+        with console.status("[dim]Indexing existing sessions...[/dim]"):
+            sessions_indexed = _run(_index())
+    except Exception:
+        sessions_indexed = 0
+        console.print("  [yellow]![/yellow] Indexing failed (non-fatal, run 'kraang index' later)")
+
+    # 6. Create .claude/rules/kraang.md
+    rules_dir = claude_dir / "rules"
+    rules_file = rules_dir / "kraang.md"
+    rules_configured = False
+    if not rules_file.exists():
+        rules_dir.mkdir(parents=True, exist_ok=True)
+        rules_file.write_text(_KRAANG_RULES)
+        rules_configured = True
+        console.print("  [green]+[/green] .claude/rules/kraang.md created")
+    else:
+        console.print("  [dim]=[/dim] .claude/rules/kraang.md already exists")
 
     display_init_summary(
         db_path=str(db_path),
         mcp_json_updated=mcp_json_updated,
         hook_configured=hook_configured,
         sessions_indexed=sessions_indexed,
+        gitignore_updated=gitignore_updated,
+        rules_configured=rules_configured,
     )
 
 
