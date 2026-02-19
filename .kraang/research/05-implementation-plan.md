@@ -1,3 +1,8 @@
+> **Note:** This was the pre-implementation plan. The actual implementation
+> diverged in several areas (different function names, formulas, and some
+> planned features were deferred). For the authoritative description of what
+> was built, see `06-onboarding-guide.md`.
+
 # Kraang Improvement Plan — Inspired by OpenClaw
 
 > Based on comprehensive analysis of OpenClaw's memory system

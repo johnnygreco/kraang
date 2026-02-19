@@ -2,13 +2,13 @@
 
 **Branch:** `rethinking-memory`
 **Date:** 2026-02-19
-**Status:** Implementation complete, 279 tests passing, changes uncommitted
+**Status:** Implementation complete, 247 tests passing (dead code modules removed), changes uncommitted
 
 ---
 
 ## 1. What We Did (Executive Summary)
 
-We studied the [OpenClaw](https://github.com/openclaw/openclaw) memory system in depth, extracted its best ideas, and integrated them into kraang. The upgrade adds **semantic search**, **hybrid retrieval**, **temporal decay**, **diversity re-ranking**, and **prompt injection protection** — while preserving kraang's simplicity and keeping everything optional.
+We studied the [OpenClaw](https://github.com/openclaw/openclaw) memory system in depth, extracted its best ideas, and integrated them into kraang. The upgrade adds **semantic search**, **hybrid retrieval**, and **prompt injection protection** — while preserving kraang's simplicity and keeping everything optional.
 
 Before this work, kraang had:
 - SQLite FTS5 keyword search
@@ -18,8 +18,6 @@ Before this work, kraang had:
 After this work, kraang also has:
 - **Hybrid search** — vector (semantic) + keyword, weighted merge
 - **Embedding provider** — OpenAI text-embedding-3-small with caching and retry
-- **Temporal decay** — older notes rank lower, with "evergreen"/"pinned" exemptions
-- **MMR re-ranking** — diversity via Maximal Marginal Relevance
 - **`context` tool** — auto-recall with prompt injection protection
 - **Graceful degradation everywhere** — no API key? No `sqlite-vec`? Works fine, FTS-only.
 
@@ -36,13 +34,13 @@ User/Agent
 │   (FastMCP)      │  remember, recall, context, read_session, forget, status
 └──────┬───────────┘
        │
-       ├─────────────────────────────────────────────────┐
-       ▼                                                 ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│ hybrid.py    │  │ temporal     │  │  mmr.py      │  │  safety.py   │
-│ Vector+FTS   │  │ _decay.py   │  │  Diversity    │  │  Injection   │
-│ merge        │  │ Age scoring  │  │  re-ranking   │  │  protection  │
-└──────┬───────┘  └──────────────┘  └──────────────┘  └──────────────┘
+       ├──────────────────────────────┐
+       ▼                              ▼
+┌──────────────┐                    ┌──────────────┐
+│ hybrid.py    │                    │  safety.py   │
+│ Vector+FTS   │                    │  Injection   │
+│ merge        │                    │  protection  │
+└──────┬───────┘                    └──────────────┘
        │
        ├──────────────────┐
        ▼                  ▼
@@ -60,7 +58,8 @@ User/Agent
 3. `hybrid.py` runs **vector search** and **FTS search** in parallel (`asyncio.gather`)
 4. Merges results by `note_id`, computing weighted scores: `0.7 * vec + 0.3 * fts`
 5. Filters by `min_score` threshold (default 0.35)
-6. Results could then be passed through `apply_temporal_decay()` and `mmr_rerank()` (wired but not yet called by default in `recall` — ready for integration)
+6. Note: `temporal_decay.py` and `mmr.py` were removed as dead code. They can be
+   re-implemented and integrated here when needed. See section 9 for the integration pattern.
 7. Formatted as markdown and returned
 
 ### Data flow for `context("asyncio")`
@@ -113,50 +112,26 @@ Key components:
 - Store typed as `object` to avoid circular imports (asserted at runtime)
 - The function handles the `None` provider case directly — callers don't need to check
 
-### `src/kraang/temporal_decay.py` (38 lines)
+### `src/kraang/temporal_decay.py` — DELETED
 
-**Purpose:** Exponential decay scoring to penalize stale notes.
+Removed as dead code (never wired into any pipeline). Was an exponential decay scorer with 30-day half-life and "evergreen"/"pinned" exemptions. Trivial to re-implement when needed.
 
-Key components:
-- **`decay_multiplier(age_days, half_life_days=30)`** — `exp(-ln(2)/half_life * age)`. After 30 days, score is halved. After 60 days, quartered. Never goes negative.
-- **`apply_temporal_decay(results, half_life_days=30, exempt_tags={"evergreen","pinned"})`** — Mutates scores in-place, skips notes with exempt tags
+### `src/kraang/mmr.py` — DELETED
 
-**Design decisions:**
-- 30-day half-life — reasonable for a knowledge base (not a news feed, not an encyclopedia)
-- "evergreen" and "pinned" tag exemptions — pinned notes are always relevant; facts-of-the-world don't decay
-- Mutates in-place for performance (returns same list for chaining convenience)
-- Not yet wired into the default `recall` pipeline — it's a building block ready for use
+Removed as dead code (never wired into any pipeline). Was a Maximal Marginal Relevance re-ranker using Jaccard similarity on text tokens. Trivial to re-implement when needed.
 
-### `src/kraang/mmr.py` (71 lines)
-
-**Purpose:** Maximal Marginal Relevance for diversity in search results.
-
-Key components:
-- **`tokenize(text)`** — Lowercased alphanumeric tokenization into a `set[str]`
-- **`jaccard_similarity(a, b)`** — `|A ∩ B| / |A ∪ B|`, used as a text-similarity proxy
-- **`mmr_rerank(results, lambda_=0.7)`** — Greedy MMR selection (Carbonell & Goldstein, 1998):
-  1. Normalize scores to [0, 1]
-  2. Greedily pick the candidate with highest `λ * relevance - (1-λ) * max_sim_to_selected`
-  3. Returns a **new** list (input not mutated)
-
-**Design decisions:**
-- Jaccard on text tokens instead of cosine on embeddings — works without embedding vectors, simpler, adequate for diversity
-- `lambda_ = 0.7` — favors relevance over diversity (matching OpenClaw's default)
-- Greedy O(n²) algorithm — fine for the result sizes we deal with (10-50 items max)
-- Not yet wired into default pipeline — available as a building block
-
-### `src/kraang/safety.py` (64 lines)
+### `src/kraang/safety.py` (67 lines)
 
 **Purpose:** Prompt injection detection and safe context formatting.
 
 Key components:
-- **`INJECTION_PATTERNS`** — 9 compiled regexes matching known injection patterns:
+- **`INJECTION_PATTERNS`** — 8 compiled regexes matching known injection patterns:
   - "ignore all previous instructions"
   - "disregard previous"
   - "you are now a..."
   - "system:" prefixes
   - `<system>` / `</system>` tags
-  - `[INST]` / `[/INST]` delimiters
+  - `[INST]` / `[/INST]` delimiters (single merged pattern)
   - `<|im_start|>` chat-ML markers
   - `<<SYS>>` Llama-style markers
 - **`looks_like_injection(text)`** — Returns `True` if text matches any pattern (whitespace-normalized)
@@ -269,7 +244,7 @@ New additions:
 
 ## 5. Test Coverage
 
-**279 tests total**, all passing in ~0.9s.
+**247 tests total** (after removing 32 tests for deleted dead code), all passing.
 
 ### New test files
 
@@ -277,9 +252,9 @@ New additions:
 |------|-------|-------|----------------|
 | `test_embeddings.py` | 11 | 346 | Provider creation, L2 normalization, retry logic, no-key fallback, batch embedding, edge cases |
 | `test_hybrid.py` | 12 | 147 | BM25 normalization, FTS fallback, merge logic, config defaults, min_score filtering, provider mock |
-| `test_temporal_decay.py` | 18 | 129 | Decay formula accuracy, half-life correctness, exempt tags, zero/negative ages, edge cases |
-| `test_mmr.py` | 14 | 186 | Tokenize, Jaccard similarity, MMR selection order, lambda tuning, single/empty results, diversity |
-| `test_safety.py` | 12 | 207 | Injection detection (9 patterns + negatives), HTML escaping, context formatting, empty results |
+| `test_safety.py` | 12 | 207 | Injection detection (8 patterns + negatives), HTML escaping, context formatting, empty results |
+| ~~`test_temporal_decay.py`~~ | — | — | Deleted (tested dead code) |
+| ~~`test_mmr.py`~~ | — | — | Deleted (tested dead code) |
 
 ### Extended test files
 
@@ -369,14 +344,9 @@ server.py
   ├── formatter.py
   └── config.py
 
-temporal_decay.py
-  └── models.py (NoteSearchResult, utcnow)
-
-mmr.py
-  └── models.py (NoteSearchResult)
 ```
 
-Note: `temporal_decay.py` and `mmr.py` are standalone modules with no dependency on `store.py` or `server.py`. They operate on `list[NoteSearchResult]` and can be composed freely.
+Note: `temporal_decay.py` and `mmr.py` were removed as dead code. They can be re-implemented as standalone modules operating on `list[NoteSearchResult]` when needed.
 
 ---
 
@@ -423,9 +393,9 @@ Currently `HybridConfig()` defaults are used everywhere. To customize, you'd pas
 
 ## 9. What's Next (Suggested Improvements)
 
-### Wire temporal decay + MMR into the recall pipeline
+### Re-implement temporal decay + MMR and wire into the recall pipeline
 
-Both modules are implemented and tested but not yet called from `server.recall()` or `server.context()`. To wire them in:
+`temporal_decay.py` and `mmr.py` were deleted as dead code (never wired into any pipeline). They were trivial modules and can be re-implemented when needed. The integration pattern would be:
 
 ```python
 # In server.py recall() or context(), after hybrid_search returns:
@@ -504,9 +474,9 @@ kraang serve  # start the MCP server
 ### New source files (untracked)
 - `src/kraang/embeddings.py` — Embedding provider (154 lines)
 - `src/kraang/hybrid.py` — Hybrid search (143 lines)
-- `src/kraang/temporal_decay.py` — Age-based decay (38 lines)
-- `src/kraang/mmr.py` — Diversity re-ranking (71 lines)
-- `src/kraang/safety.py` — Injection protection (64 lines)
+- `src/kraang/safety.py` — Injection protection (67 lines)
+- ~~`src/kraang/temporal_decay.py`~~ — Deleted (dead code, never wired in)
+- ~~`src/kraang/mmr.py`~~ — Deleted (dead code, never wired in)
 
 ### Modified source files (tracked)
 - `src/kraang/store.py` — +253 lines (embedding cache, vector search, brute-force fallback)
@@ -520,9 +490,9 @@ kraang serve  # start the MCP server
 ### New test files (untracked)
 - `tests/test_embeddings.py` — 346 lines, 11 tests
 - `tests/test_hybrid.py` — 147 lines, 12 tests
-- `tests/test_temporal_decay.py` — 129 lines, 18 tests
-- `tests/test_mmr.py` — 186 lines, 14 tests
 - `tests/test_safety.py` — 207 lines, 12 tests
+- ~~`tests/test_temporal_decay.py`~~ — Deleted (tested dead code)
+- ~~`tests/test_mmr.py`~~ — Deleted (tested dead code)
 
 ### Modified test files (tracked)
 - `tests/test_store.py` — +139 lines, 13 new tests
@@ -536,4 +506,4 @@ kraang serve  # start the MCP server
 - `05-implementation-plan.md` — Phased implementation plan
 - `06-onboarding-guide.md` — This document
 
-### Total: 9 tracked changes (+735/-13), 11 untracked new files, 6 research docs
+### Total: 9 tracked changes (+735/-13), 9 untracked new files (2 deleted), 6 research docs

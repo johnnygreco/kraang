@@ -41,6 +41,7 @@ Add to your MCP client configuration (e.g. Claude Code, Claude Desktop):
 | `recall` | Search notes and indexed sessions. Supports scoping to `"notes"`, `"sessions"`, or `"all"`. |
 | `read_session` | Load a full conversation transcript by session ID (use `recall` to find sessions first). |
 | `forget` | Downweight or hide a note by adjusting its relevance score (0.0 = hidden, 1.0 = full). |
+| `context` | Auto-recall relevant memories with safety framing for LLM context injection |
 | `status` | Get a knowledge base overview: note/session counts, recent activity, top tags. |
 
 ## CLI Commands
@@ -69,6 +70,64 @@ Kraang uses a layered architecture:
 7. **Formatter** (`formatter.py`) -- Markdown formatting for tool and CLI output.
 8. **Display** (`display.py`) -- Rich console rendering for CLI commands.
 9. **Config** (`config.py`) -- Project root detection and database path resolution.
+
+## Semantic Search (optional)
+
+Kraang supports hybrid semantic + keyword search for more intelligent recall. When enabled, queries like "that debugging trick from last week" work alongside exact keyword matches.
+
+### Setup
+
+1. Install the embeddings extra:
+   ```bash
+   pip install kraang[embeddings]
+   # or
+   uv pip install kraang[embeddings]
+   ```
+
+2. Set your OpenAI API key:
+   ```bash
+   export OPENAI_API_KEY="sk-..."
+   ```
+
+3. Verify with the `status` tool or CLI:
+   ```bash
+   kraang status
+   ```
+
+When enabled, `remember` automatically embeds notes for semantic search. Existing notes can be re-saved to generate embeddings.
+
+### How it works
+
+- **Hybrid search**: Combines vector similarity (70%) with keyword matching (30%)
+- **Graceful degradation**: No API key or extras? Everything works with keyword search only
+- **Embedding cache**: Content-addressed cache avoids redundant API calls
+- **Safety framing**: The `context` tool wraps recalled memories with prompt injection protection
+
+### Environment variables
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `OPENAI_API_KEY` | No | — | Enables semantic search via OpenAI embeddings |
+| `KRAANG_DB_PATH` | No | `~/.kraang/kraang.db` | Override database location |
+
+### Claude Code integration
+
+When using `kraang init`, add `OPENAI_API_KEY` to the generated `.mcp.json` to enable semantic search in Claude Code:
+
+```json
+{
+  "mcpServers": {
+    "kraang": {
+      "command": "uvx",
+      "args": ["kraang", "serve"],
+      "env": {
+        "KRAANG_DB_PATH": ".kraang/kraang.db",
+        "OPENAI_API_KEY": "sk-..."
+      }
+    }
+  }
+}
+```
 
 ## Development
 
