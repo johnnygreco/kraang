@@ -75,6 +75,7 @@ async def _get_store() -> SQLiteStore:
 async def _get_provider() -> EmbeddingProvider | None:
     """Return the embedding provider singleton, or ``None`` if unavailable."""
     global _provider, _provider_init_attempted
+    need_vec_table = False
     async with _init_lock:
         if _provider_init_attempted:
             return _provider
@@ -85,19 +86,26 @@ async def _get_provider() -> EmbeddingProvider | None:
         try:
             _provider = await create_provider()
             if _provider is not None:
-                store = await _get_store()
-                await store.ensure_vec_table(_provider.dims)
-                logger.info(
-                    "Embedding provider ready: %s/%s (%d dims)",
-                    _provider.provider_id,
-                    _provider.model,
-                    _provider.dims,
-                )
+                need_vec_table = True
             _provider_init_attempted = True
         except Exception:
             logger.warning("Embedding provider init failed — will retry next call", exc_info=True)
             _provider = None
             # NOTE: do NOT set _provider_init_attempted = True here
+    # Create vec table outside the lock to avoid deadlock (_get_store also acquires _init_lock).
+    # ensure_vec_table is idempotent so concurrent calls are safe.
+    if need_vec_table and _provider is not None:
+        try:
+            store = await _get_store()
+            await store.ensure_vec_table(_provider.dims)
+            logger.info(
+                "Embedding provider ready: %s/%s (%d dims)",
+                _provider.provider_id,
+                _provider.model,
+                _provider.dims,
+            )
+        except Exception:
+            logger.warning("Failed to create vec table", exc_info=True)
     return _provider
 
 
