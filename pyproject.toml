@@ -39,6 +39,10 @@ dev = [
     "coverage>=7.0",
     "pre-commit>=3.0",
 ]
+embeddings = [
+    "httpx>=0.27",
+    "sqlite-vec>=0.1.6",
+]
 
 [tool.hatch.version]
 source = "vcs"
@@ -64,3 +68,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.ty.environment]
 python-version = "3.10"
+
+[tool.ty.analysis]
+allowed-unresolved-imports = ["sqlite_vec"]

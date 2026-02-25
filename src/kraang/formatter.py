@@ -74,12 +74,15 @@ def _format_date(dt: datetime) -> str:
 # ---------------------------------------------------------------------------
 
 
-def format_remember_created(note: Note, similar: list[Note] | None = None) -> str:
+def format_remember_created(
+    note: Note, embedded: bool = False, similar: list[Note] | None = None
+) -> str:
     """Format output for a newly created note."""
     parts: list[str] = []
     tag_str = f" (tags: {_format_tags(note.tags)})" if note.tags else ""
     cat_str = f" | category: {note.category}" if note.category else ""
-    parts.append(f'Created "{note.title}"{tag_str}{cat_str}')
+    embed_str = " [embedded]" if embedded else " [FTS only]"
+    parts.append(f'Created "{note.title}"{tag_str}{cat_str}{embed_str}')
 
     if similar:
         for s in similar:
@@ -91,11 +94,12 @@ def format_remember_created(note: Note, similar: list[Note] | None = None) -> st
     return "\n".join(parts)
 
 
-def format_remember_updated(note: Note) -> str:
+def format_remember_updated(note: Note, embedded: bool = False) -> str:
     """Format output for an updated note."""
     tag_str = f" (tags: {_format_tags(note.tags)})" if note.tags else ""
     cat_str = f" | category: {note.category}" if note.category else ""
-    return f'Updated "{note.title}"{tag_str}{cat_str}'
+    embed_str = " [embedded]" if embedded else " [FTS only]"
+    return f'Updated "{note.title}"{tag_str}{cat_str}{embed_str}'
 
 
 # ---------------------------------------------------------------------------
@@ -239,16 +243,20 @@ def format_status(
     categories: dict[str, int],
     tags: dict[str, int],
     stale_notes: list[Note],
+    embedding_status: str = "",
 ) -> str:
     """Format the status overview as markdown."""
     parts: list[str] = ["## Kraang Status\n"]
 
     # Counts
+    total_notes = active_notes + forgotten_notes
     parts.append(
-        f"**Notes:** {active_notes} total ({active_notes} active, {forgotten_notes} forgotten)"
+        f"**Notes:** {total_notes} total ({active_notes} active, {forgotten_notes} forgotten)"
     )
     indexed_str = _format_date(last_indexed) if last_indexed else "never"
     parts.append(f"**Sessions indexed:** {session_count} (last indexed: {indexed_str})")
+    if embedding_status:
+        parts.append(f"**Embeddings:** {embedding_status}")
 
     # Recent notes
     if recent_notes:

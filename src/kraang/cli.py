@@ -188,6 +188,14 @@ def init(
     else:
         console.print("  [dim]=[/dim] .mcp.json already configured")
 
+    import os
+
+    if os.environ.get("OPENAI_API_KEY"):
+        console.print(
+            "  [dim]Tip: Add OPENAI_API_KEY to .mcp.json env"
+            " to enable semantic search in Claude Code[/dim]"
+        )
+
     # 4. Create/merge .claude/settings.json with SessionEnd hook
     claude_dir = root / ".claude"
     claude_dir.mkdir(exist_ok=True)
@@ -445,6 +453,7 @@ def search(
 
     async def _search() -> None:
         from kraang.display import display_search_results
+        from kraang.hybrid import hybrid_search
         from kraang.search import build_fts_query
         from kraang.store import SQLiteStore
 
@@ -455,14 +464,21 @@ def search(
             typer.echo(f"Database not found at {db_path}. Run 'kraang init' first.", err=True)
             raise typer.Exit(1)
 
-        async with SQLiteStore(str(db_path)) as store:
-            fts_expr = build_fts_query(query)
-            if not fts_expr:
-                typer.echo(f'No valid search terms in "{query}".')
-                return
+        # Try to get embedding provider
+        try:
+            from kraang.embeddings import create_provider
 
-            note_results = await store.search_notes(fts_expr, limit=limit)
-            session_results = await store.search_sessions(fts_expr, limit=limit)
+            provider = await create_provider()
+        except (ImportError, Exception):
+            provider = None
+
+        async with SQLiteStore(str(db_path)) as store:
+            note_results = await hybrid_search(store, provider, query, limit=limit)
+
+            fts_expr = build_fts_query(query)
+            session_results = []
+            if fts_expr:
+                session_results = await store.search_sessions(fts_expr, limit=limit)
 
             notes = [(r.note, r.score, r.snippet) for r in note_results]
             sessions = [(r.session, r.score, r.snippet) for r in session_results]
@@ -523,6 +539,24 @@ def status_cmd() -> None:
             typer.echo(f"Database not found at {db_path}. Run 'kraang init' first.", err=True)
             raise typer.Exit(1)
 
+        # Try to get embedding provider
+        try:
+            from kraang.embeddings import create_provider
+
+            provider = await create_provider()
+        except (ImportError, Exception):
+            provider = None
+
+        if provider is not None:
+            embedding_status = f"{provider.provider_id}/{provider.model} ({provider.dims} dims)"
+        else:
+            try:
+                import kraang.embeddings  # noqa: F401
+
+                embedding_status = "disabled — set OPENAI_API_KEY to enable semantic search"
+            except ImportError:
+                embedding_status = "disabled — install with: pip install kraang[embeddings]"
+
         async with SQLiteStore(str(db_path)) as store:
             active, forgotten = await store.count_notes()
             session_count = await store.count_sessions()
@@ -541,6 +575,7 @@ def status_cmd() -> None:
                 categories=categories,
                 tags=tags,
                 stale_notes=stale,
+                embedding_status=embedding_status,
             )
             display_status(md)
 
