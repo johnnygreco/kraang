@@ -858,12 +858,16 @@ class SQLiteStore:
 
             results: list[NoteSearchResult] = []
             for row in rows:
+                dist = row["dist"]
+                # Guard against NaN/inf from zero-magnitude vectors.
+                if math.isnan(dist) or math.isinf(dist):
+                    continue
                 note = await self.get_note(row["note_id"])
                 if note is None:
                     continue
                 # vec_distance_cosine returns 1 - cosine_similarity, ranging from
                 # 0 (identical) to 2 (opposite). Clamp to avoid negative scores.
-                score = max(0.0, 1.0 - row["dist"]) * note.relevance
+                score = max(0.0, 1.0 - dist) * note.relevance
                 results.append(NoteSearchResult(note=note, score=score, snippet=""))
             return results
         except Exception:

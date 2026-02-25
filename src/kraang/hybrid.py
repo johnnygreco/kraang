@@ -90,12 +90,14 @@ async def hybrid_search(
     try:
         query_embedding = await provider.embed_query(query)
     except Exception:
-        logger.warning("embed_query failed, falling back to FTS-only", exc_info=True)
+        logger.warning(
+            "embed_query failed — falling back to FTS-only (results may be less relevant)",
+            exc_info=True,
+        )
         fts_expr = build_fts_query(query)
         if not fts_expr:
             return []
-        raw = await store.search_notes(fts_expr, limit=limit)
-        return raw
+        return await store.search_notes(fts_expr, limit=limit)
 
     fts_expr = build_fts_query(query)
 

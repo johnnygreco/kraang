@@ -41,10 +41,10 @@ mcp = FastMCP(
         "A second brain for humans and their agents — "
         "project-scoped knowledge management with session indexing, full-text search, "
         "and optional semantic search. "
-        "Tools: remember (save knowledge), recall (search), "
-        "context (auto-recall for prompt injection), "
-        "read_session (view transcript), forget (downweight), "
-        "status (overview)."
+        "Use `remember` proactively to store decisions, debugging breakthroughs, patterns, "
+        "and setup details. Use `recall` at the start of each session to retrieve relevant "
+        "context. Use `context` for safety-framed auto-recall. "
+        "Use `status` to check for stale notes."
     ),
 )
 

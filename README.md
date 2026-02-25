@@ -7,15 +7,21 @@
 
 Kraang is an MCP (Model Context Protocol) server that gives AI assistants persistent memory and session indexing, backed by SQLite with FTS5 full-text search. It stores knowledge notes, indexes conversation transcripts, and surfaces what matters via search.
 
+## Why?
+
+AI assistants forget everything between sessions. Kraang gives them persistent memory — decisions, debugging breakthroughs, patterns — so your next conversation picks up where the last one left off.
+
 ## Quick Start
 
 The fastest way to get started is with `kraang init`:
 
 ```bash
-uvx kraang init
+uvx kraang init        # ephemeral — downloads on each run
+uv tool install kraang # persistent — install once, use everywhere
+kraang init
 ```
 
-This creates a `.kraang/` directory, initializes the database, configures `.mcp.json`, sets up a `SessionEnd` hook for automatic session indexing, and indexes any existing sessions.
+This creates a `.kraang/` directory, initializes the database, configures `.mcp.json`, sets up a `SessionEnd` hook for automatic session indexing, creates `.claude/rules/kraang.md` for proactive agent behavior, and indexes any existing sessions.
 
 ### Manual Configuration
 
@@ -151,6 +157,15 @@ Run the full check suite:
 make coverage   # tests + coverage report
 make format     # auto-format with ruff
 ```
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| Kraang tools not showing up in Claude Code | Restart Claude Code after running `kraang init` |
+| Sessions not being indexed automatically | Check that `.claude/settings.json` has the `SessionEnd` hook |
+| Search returns nothing | Run `kraang status` to check counts, then `kraang index` to re-index |
+| Need a fresh start | Delete `.kraang/` and re-run `kraang init` |
 
 ## License
 
