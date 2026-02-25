@@ -109,6 +109,7 @@ class TestHybridSearchWithProvider:
                 return [0.5, 0.5, 0.5]
 
         # Store a vector embedding for a note so vector search returns it
+        await populated_store.ensure_vec_table(3)
         notes = await populated_store.search_notes('"asyncio"', limit=1)
         assert len(notes) > 0, "Expected at least one note matching 'asyncio'"
         note_id = notes[0].note.note_id
@@ -186,6 +187,7 @@ class TestHybridSearchWithProvider:
                 return [0.5, 0.5, 0.5]
 
         # Store some embeddings so vector search can return results
+        await populated_store.ensure_vec_table(3)
         notes = await populated_store.search_notes('"python"', limit=1)
         if notes:
             await populated_store.upsert_note_embedding(

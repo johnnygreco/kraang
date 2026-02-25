@@ -464,13 +464,9 @@ def search(
             typer.echo(f"Database not found at {db_path}. Run 'kraang init' first.", err=True)
             raise typer.Exit(1)
 
-        # Try to get embedding provider
-        try:
-            from kraang.embeddings import create_provider
+        from kraang.embeddings import create_provider
 
-            provider = await create_provider()
-        except (ImportError, Exception):
-            provider = None
+        provider = await create_provider()
 
         async with SQLiteStore(str(db_path)) as store:
             note_results = await hybrid_search(store, provider, query, limit=limit)
@@ -539,23 +535,14 @@ def status_cmd() -> None:
             typer.echo(f"Database not found at {db_path}. Run 'kraang init' first.", err=True)
             raise typer.Exit(1)
 
-        # Try to get embedding provider
-        try:
-            from kraang.embeddings import create_provider
+        from kraang.embeddings import create_provider
 
-            provider = await create_provider()
-        except (ImportError, Exception):
-            provider = None
+        provider = await create_provider()
 
         if provider is not None:
             embedding_status = f"{provider.provider_id}/{provider.model} ({provider.dims} dims)"
         else:
-            try:
-                import kraang.embeddings  # noqa: F401
-
-                embedding_status = "disabled — set OPENAI_API_KEY to enable semantic search"
-            except ImportError:
-                embedding_status = "disabled — install with: pip install kraang[embeddings]"
+            embedding_status = "disabled — set OPENAI_API_KEY to enable semantic search"
 
         async with SQLiteStore(str(db_path)) as store:
             active, forgotten = await store.count_notes()

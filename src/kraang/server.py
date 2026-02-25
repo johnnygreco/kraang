@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal
 from mcp.server.fastmcp import FastMCP
 
 from kraang.config import resolve_db_path
+from kraang.embeddings import EmbeddingProvider, create_provider
 from kraang.formatter import (
     format_forget,
     format_recall_results,
@@ -23,13 +24,7 @@ from kraang.safety import format_recalled_context, looks_like_injection
 from kraang.search import build_fts_query
 from kraang.store import content_hash
 
-try:
-    from kraang.embeddings import create_provider
-except ImportError:
-    create_provider = None  # type: ignore[assignment]
-
 if TYPE_CHECKING:
-    from kraang.embeddings import EmbeddingProvider
     from kraang.store import SQLiteStore
 
 logger = logging.getLogger("kraang.server")
@@ -79,10 +74,6 @@ async def _get_provider() -> EmbeddingProvider | None:
     async with _init_lock:
         if _provider_init_attempted:
             return _provider
-        if create_provider is None:
-            _provider_init_attempted = True
-            logger.debug("Embeddings extra not installed — semantic search disabled")
-            return None
         try:
             _provider = await create_provider()
             if _provider is not None:
@@ -352,14 +343,7 @@ async def status() -> str:
         if provider is not None:
             embedding_status = f"{provider.provider_id}/{provider.model} ({provider.dims} dims)"
         else:
-            # Check WHY provider is None
-            try:
-                import kraang.embeddings  # noqa: F401
-
-                # kraang.embeddings importable, so the extras are installed
-                embedding_status = "disabled — set OPENAI_API_KEY to enable semantic search"
-            except ImportError:
-                embedding_status = "disabled — install with: pip install kraang[embeddings]"
+            embedding_status = "disabled — set OPENAI_API_KEY to enable semantic search"
 
         return format_status(
             active_notes=active,

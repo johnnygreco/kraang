@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiosqlite
+import sqlite_vec  # noqa: F401
 
 from kraang.config import normalize_title
 from kraang.models import (
@@ -24,20 +25,6 @@ from kraang.models import (
 )
 
 logger = logging.getLogger("kraang.store")
-
-# ---------------------------------------------------------------------------
-# sqlite-vec availability
-# ---------------------------------------------------------------------------
-
-# True if `import sqlite_vec` succeeded at module load time. Does NOT guarantee
-# the extension loads into a specific connection — check self._vec_loaded after initialize().
-_SQLITE_VEC_IMPORTABLE = False
-try:
-    import sqlite_vec  # noqa: F401
-
-    _SQLITE_VEC_IMPORTABLE = True
-except ImportError:
-    pass
 
 # ---------------------------------------------------------------------------
 # SQL schema
@@ -173,7 +160,7 @@ class SQLiteStore:
         self._db_path = db_path
         self._db: aiosqlite.Connection | None = None
         self._write_lock = asyncio.Lock()
-        self._vec_loaded = _SQLITE_VEC_IMPORTABLE
+        self._vec_loaded = True
 
     # -- lifecycle -----------------------------------------------------------
 

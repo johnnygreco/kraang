@@ -62,11 +62,12 @@ class FakeClient:
 
 
 def _patch_httpx(monkeypatch, fake_client):
-    """Patch _call_api to use a fake httpx module with the given client."""
-    fake_httpx = types.ModuleType("httpx")
-    # We need the real httpx exception types for the retry logic
+    """Patch the httpx module reference in kraang.embeddings to use a fake client."""
     import httpx as real_httpx
 
+    import kraang.embeddings as mod
+
+    fake_httpx = types.ModuleType("httpx")
     fake_httpx.AsyncClient = lambda timeout=None: fake_client  # type: ignore[attr-defined]
     fake_httpx.HTTPStatusError = real_httpx.HTTPStatusError  # type: ignore[attr-defined]
     fake_httpx.ConnectError = real_httpx.ConnectError  # type: ignore[attr-defined]
@@ -74,29 +75,8 @@ def _patch_httpx(monkeypatch, fake_client):
     fake_httpx.Request = real_httpx.Request  # type: ignore[attr-defined]
     fake_httpx.Response = real_httpx.Response  # type: ignore[attr-defined]
 
-    original_call_api = OpenAIEmbeddingProvider._call_api
-
-    async def patched_call_api(self, texts):
-        import sys
-
-        old_httpx = sys.modules.get("httpx")
-        sys.modules["httpx"] = fake_httpx
-        try:
-            import kraang.embeddings as mod
-
-            old_base = mod._BASE_DELAY
-            mod._BASE_DELAY = 0.01  # Speed up retries for testing
-            try:
-                return await original_call_api(self, texts)
-            finally:
-                mod._BASE_DELAY = old_base
-        finally:
-            if old_httpx is not None:
-                sys.modules["httpx"] = old_httpx
-            else:
-                sys.modules.pop("httpx", None)
-
-    monkeypatch.setattr(OpenAIEmbeddingProvider, "_call_api", patched_call_api)
+    monkeypatch.setattr(mod, "httpx", fake_httpx)
+    monkeypatch.setattr(mod, "_BASE_DELAY", 0.01)  # Speed up retries
 
 
 # ---------------------------------------------------------------------------

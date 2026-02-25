@@ -1,4 +1,4 @@
-"""Embedding provider abstraction for kraang — optional semantic search."""
+"""Embedding provider abstraction for kraang — semantic search."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import logging
 import math
 import os
 from typing import Protocol, runtime_checkable
+
+import httpx
 
 logger = logging.getLogger("kraang.embeddings")
 
@@ -106,14 +108,6 @@ class OpenAIEmbeddingProvider:
 
     async def _call_api(self, texts: list[str]) -> list[list[float]]:
         """Call the OpenAI embeddings endpoint with retry + exponential backoff."""
-        try:
-            import httpx
-        except ImportError as exc:
-            raise ImportError(
-                "httpx is required for OpenAI embeddings. "
-                "Install it with: pip install kraang[embeddings]"
-            ) from exc
-
         last_exc: Exception | None = None
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             for attempt in range(1, _MAX_RETRIES + 1):
