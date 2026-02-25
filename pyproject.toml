@@ -25,6 +25,7 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "typer>=0.12",
     "rich>=13.0",
+    "sqlite-vec>=0.1.6",
 ]
 
 [project.scripts]
@@ -38,10 +39,6 @@ dev = [
     "ty>=0.0.1a7",
     "coverage>=7.0",
     "pre-commit>=3.0",
-]
-embeddings = [
-    "httpx>=0.27",
-    "sqlite-vec>=0.1.6",
 ]
 
 [tool.hatch.version]
@@ -70,4 +67,3 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python-version = "3.10"
 
 [tool.ty.analysis]
-allowed-unresolved-imports = ["sqlite_vec"]

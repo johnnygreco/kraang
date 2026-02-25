@@ -86,29 +86,19 @@ Kraang supports hybrid semantic + keyword search for more intelligent recall. Wh
 
 ### Setup
 
-1. Install the embeddings extra:
-   ```bash
-   pip install kraang[embeddings]
-   # or
-   uv pip install kraang[embeddings]
-   ```
+Set your OpenAI API key to enable semantic search:
 
-2. Set your OpenAI API key:
-   ```bash
-   export OPENAI_API_KEY="sk-..."
-   ```
-
-3. Verify with the `status` tool or CLI:
-   ```bash
-   kraang status
-   ```
+```bash
+export OPENAI_API_KEY="sk-..."
+kraang status  # verify: should show openai/text-embedding-3-small
+```
 
 When enabled, `remember` automatically embeds notes for semantic search. Existing notes can be re-saved to generate embeddings.
 
 ### How it works
 
 - **Hybrid search**: Combines vector similarity (70%) with keyword matching (30%)
-- **Graceful degradation**: No API key or extras? Everything works with keyword search only
+- **Graceful degradation**: No API key? Everything works with keyword search only
 - **Embedding cache**: Content-addressed cache avoids redundant API calls
 - **Safety framing**: The `context` tool wraps recalled memories with prompt injection protection
 

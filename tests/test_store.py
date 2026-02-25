@@ -539,11 +539,13 @@ class TestEmbeddingCache:
 
 class TestVectorSearch:
     async def test_search_empty(self, store):
+        store._vec_loaded = False
         results = await store.search_notes_vector([0.1, 0.2, 0.3], limit=5)
         assert results == []
 
     async def test_upsert_and_search_bruteforce(self, store):
         """Test upsert_note_embedding + search_notes_vector with brute-force fallback."""
+        store._vec_loaded = False
         # Create a note first
         note, _ = await store.upsert_note("Vector test", "Content about vectors")
 
@@ -559,6 +561,7 @@ class TestVectorSearch:
         assert results[0].score > 0.0
 
     async def test_bruteforce_excludes_forgotten(self, store):
+        store._vec_loaded = False
         note, _ = await store.upsert_note("Forgotten vec", "Content")
         await store.upsert_note_embedding(note.note_id, [1.0, 0.0])
         await store.set_relevance("Forgotten vec", 0.0)
@@ -568,6 +571,7 @@ class TestVectorSearch:
 
     async def test_bruteforce_skips_forgotten_notes(self, store):
         """Brute-force search should skip forgotten notes and fill the limit."""
+        store._vec_loaded = False
         # Create 5 notes with embeddings
         notes = []
         for i in range(5):
@@ -593,6 +597,7 @@ class TestVectorSearch:
         assert notes[1].note_id not in result_ids
 
     async def test_bruteforce_multiple_results(self, store):
+        store._vec_loaded = False
         n1, _ = await store.upsert_note("Vec A", "Content A")
         n2, _ = await store.upsert_note("Vec B", "Content B")
 
@@ -612,6 +617,7 @@ class TestVectorSearch:
 
 class TestNoteEmbedding:
     async def test_upsert_creates_entry(self, store):
+        await store.ensure_vec_table(3)
         note, _ = await store.upsert_note("Embed test", "Content")
         await store.upsert_note_embedding(note.note_id, [0.1, 0.2, 0.3])
 
@@ -620,6 +626,7 @@ class TestNoteEmbedding:
         assert len(results) == 1
 
     async def test_upsert_replaces_embedding(self, store):
+        await store.ensure_vec_table(3)
         note, _ = await store.upsert_note("Replace embed", "Content")
         await store.upsert_note_embedding(note.note_id, [1.0, 0.0, 0.0])
         await store.upsert_note_embedding(note.note_id, [0.0, 1.0, 0.0])

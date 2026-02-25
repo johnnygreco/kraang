@@ -383,55 +383,15 @@ class TestStatusEmbeddings:
         assert "Kraang Status" in result
         assert "disabled" in result.lower() or "Embeddings" in result
 
-    async def test_status_disabled_no_extras(self, store, monkeypatch):
-        """Status should show 'install with' message when extras not installed."""
-        import builtins
-
-        async def _no_provider():
-            return None
-
-        monkeypatch.setattr(server, "_get_provider", _no_provider)
-        monkeypatch.setattr(server, "create_provider", None)
-
-        # Block the import of kraang.embeddings so the try/except in status() hits ImportError
-        _real_import = builtins.__import__
-
-        def _fake_import(name, *args, **kwargs):
-            if name == "kraang.embeddings":
-                raise ImportError("mocked: extras not installed")
-            return _real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", _fake_import)
-
-        result = await server.status()
-        assert "pip install kraang[embeddings]" in result
-
     async def test_status_disabled_no_api_key(self, store, monkeypatch):
-        """Status should show 'set OPENAI_API_KEY' message when extras installed but no key."""
+        """Status should show 'set OPENAI_API_KEY' message when no key configured."""
         async def _no_provider():
             return None
 
         monkeypatch.setattr(server, "_get_provider", _no_provider)
-        # create_provider is importable (extras installed) but provider is None (no API key)
-        # We don't need to change create_provider here — the import check in status()
-        # will try importing kraang.embeddings directly.
 
         result = await server.status()
-        assert "disabled" in result.lower()
-
-
-# ---------------------------------------------------------------------------
-# _get_provider — extras not installed
-# ---------------------------------------------------------------------------
-
-
-class TestGetProvider:
-    async def test_get_provider_when_extras_not_installed(self, monkeypatch):
-        monkeypatch.setattr(server, "create_provider", None)
-        monkeypatch.setattr(server, "_provider_init_attempted", False)
-        monkeypatch.setattr(server, "_provider", None)
-        result = await server._get_provider()
-        assert result is None
+        assert "OPENAI_API_KEY" in result
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +449,7 @@ class TestRememberEmbeddingFeedback:
 
     async def test_remember_shows_embedded_when_provider_succeeds(self, store, monkeypatch):
         """remember output should show [embedded] when embedding succeeds."""
+        await store.ensure_vec_table(3)
 
         class FakeProvider:
             provider_id = "fake"
