@@ -21,7 +21,7 @@ uv tool install kraang # persistent — install once, use everywhere
 kraang init
 ```
 
-This creates a `.kraang/` directory, initializes the database, configures `.mcp.json`, sets up a `SessionEnd` hook for automatic session indexing, creates `.claude/rules/kraang.md` for proactive agent behavior, and indexes any existing sessions.
+This creates a `.kraang/` directory, initializes the database, configures `.mcp.json`, adds `.kraang/` to `.gitignore`, sets up a `SessionEnd` hook for automatic session indexing, creates `.claude/rules/kraang.md` with agent usage guidelines, and indexes any existing sessions.
 
 ### Manual Configuration
 
@@ -43,24 +43,24 @@ Add to your MCP client configuration (e.g. Claude Code, Claude Desktop):
 
 | Tool | Description |
 |------|-------------|
-| `remember` | Save knowledge to the brain. If a note with the same title exists, it updates in place. |
-| `recall` | Search notes and indexed sessions. Supports scoping to `"notes"`, `"sessions"`, or `"all"`. |
+| `remember` | Save a note. Updates in place if the title exists, otherwise creates a new one. |
+| `recall` | Search notes and conversation sessions. Scope to `"notes"`, `"sessions"`, or `"all"`. |
 | `read_session` | Load a full conversation transcript by session ID (use `recall` to find sessions first). |
 | `forget` | Downweight or hide a note by adjusting its relevance score (0.0 = hidden, 1.0 = full). |
-| `context` | Auto-recall relevant memories with safety framing for LLM context injection |
+| `context` | Auto-recall relevant memories and return safety-framed XML for context injection. |
 | `status` | Get a knowledge base overview: note/session counts, recent activity, top tags. |
 
 ## CLI Commands
 
 | Command | Description |
 |---------|-------------|
-| `kraang init` | Set up kraang for the current project (database, config, hooks, initial index). |
-| `kraang serve` | Run the MCP server over stdio (invoked by Claude Code). |
-| `kraang index` | Index or re-index conversation sessions for the project. |
-| `kraang sessions` | List recent conversation sessions. |
-| `kraang session <id>` | View a session transcript in detail. |
-| `kraang search <query>` | Search notes and sessions from the terminal. |
-| `kraang notes` | List notes in the knowledge base. |
+| `kraang init [PATH]` | Set up kraang for the current project (database, .gitignore, config, hooks, rules, initial index). |
+| `kraang serve` | Run the MCP server (invoked by Claude Code). |
+| `kraang index [PATH] [--from-hook]` | Index or re-index conversation sessions for the project. |
+| `kraang sessions [-n LIMIT] [PATH]` | List recent conversation sessions (default: 20). |
+| `kraang session <id> [-n MAX_TURNS]` | View a session transcript in detail. |
+| `kraang search <query> [-n LIMIT]` | Search notes and sessions (default: 10). |
+| `kraang notes [-a] [-n LIMIT]` | List notes in the knowledge base (`-a` includes forgotten). |
 | `kraang status` | Show knowledge base health and statistics. |
 
 ## Architecture
@@ -76,9 +76,9 @@ Kraang uses a layered architecture:
 7. **Indexer** (`indexer.py`) -- Reads Claude Code JSONL transcripts and indexes sessions.
 8. **Server** (`server.py`) -- MCP server exposing 6 tools over stdio.
 9. **CLI** (`cli.py`) -- Typer CLI for init, serve, index, and local queries.
-10. **Formatter** (`formatter.py`) -- Markdown formatting for tool and CLI output.
+10. **Formatter** (`formatter.py`) -- Markdown formatting for MCP tool responses.
 11. **Display** (`display.py`) -- Rich console rendering for CLI commands.
-12. **Config** (`config.py`) -- Project root detection and database path resolution.
+12. **Config** (`config.py`) -- Project root detection, database path resolution, and title normalization.
 
 ## Semantic Search (optional)
 
