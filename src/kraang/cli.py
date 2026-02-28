@@ -18,7 +18,7 @@ logger = logging.getLogger("kraang.cli")
 
 app = typer.Typer(
     name="kraang",
-    help="A second brain for humans and their agents.",
+    help="Long-term memory for your agents.",
     no_args_is_help=True,
 )
 
@@ -39,7 +39,7 @@ def _backup_file(path: Path, kraang_dir: Path) -> Path:
 
 
 _KRAANG_RULES = """\
-# Kraang — Second Brain
+# Kraang — Long-Term Memory
 
 You have access to the **kraang** MCP server, a persistent knowledge base.
 Use it to save knowledge worth preserving and to retrieve context \

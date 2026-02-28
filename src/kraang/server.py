@@ -33,7 +33,7 @@ logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 mcp = FastMCP(
     "kraang",
     instructions=(
-        "A second brain for humans and their agents — "
+        "Long-term memory for your agents — "
         "project-scoped knowledge management with session indexing, full-text search, "
         "and optional semantic search. "
         "Use `remember` proactively to store decisions, debugging breakthroughs, patterns, "

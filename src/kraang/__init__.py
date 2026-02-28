@@ -1,4 +1,4 @@
-"""Kraang — a second brain for humans and their agents."""
+"""Kraang — long-term memory for your agents."""
 
 from __future__ import annotations
 

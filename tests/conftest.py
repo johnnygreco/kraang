@@ -74,7 +74,7 @@ SAMPLE_NOTES: list[tuple[str, str, list[str], str]] = [
     ),
     (
         "Project Kraang architecture",
-        "Second brain MCP server with SQLite FTS5 backend. Pydantic models for contracts.",
+        "Long-term memory MCP server with SQLite FTS5 backend. Pydantic models for contracts.",
         ["kraang", "architecture", "mcp"],
         "engineering",
     ),
