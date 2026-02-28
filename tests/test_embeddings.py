@@ -1,13 +1,15 @@
-"""Tests for kraang.embeddings — provider factory, normalization, OpenAI provider."""
+"""Tests for kraang.embeddings — provider factory, normalization, OpenAI + Local providers."""
 
 from __future__ import annotations
 
 import math
-import types
+from unittest.mock import patch
 
+import numpy as np
 import pytest
 
 from kraang.embeddings import (
+    LocalEmbeddingProvider,
     OpenAIEmbeddingProvider,
     _l2_normalize,
     create_provider,
@@ -44,6 +46,7 @@ class FakeClient:
 
     def __init__(self, handler=None):
         self._handler = handler
+        self.is_closed = False
         self.last_url = None
         self.last_json = None
 
@@ -62,21 +65,39 @@ class FakeClient:
 
 
 def _patch_httpx(monkeypatch, fake_client):
-    """Patch the httpx module reference in kraang.embeddings to use a fake client."""
-    import httpx as real_httpx
-
+    """Patch the OpenAI provider to use a fake client."""
     import kraang.embeddings as mod
 
-    fake_httpx = types.ModuleType("httpx")
-    fake_httpx.AsyncClient = lambda timeout=None: fake_client  # type: ignore[attr-defined]
-    fake_httpx.HTTPStatusError = real_httpx.HTTPStatusError  # type: ignore[attr-defined]
-    fake_httpx.ConnectError = real_httpx.ConnectError  # type: ignore[attr-defined]
-    fake_httpx.TimeoutException = real_httpx.TimeoutException  # type: ignore[attr-defined]
-    fake_httpx.Request = real_httpx.Request  # type: ignore[attr-defined]
-    fake_httpx.Response = real_httpx.Response  # type: ignore[attr-defined]
-
-    monkeypatch.setattr(mod, "httpx", fake_httpx)
     monkeypatch.setattr(mod, "_BASE_DELAY", 0.01)  # Speed up retries
+
+    original_init = OpenAIEmbeddingProvider.__init__
+
+    def patched_init(self, api_key):
+        original_init(self, api_key)
+        self._client = fake_client
+
+    monkeypatch.setattr(OpenAIEmbeddingProvider, "__init__", patched_init)
+
+
+# ---------------------------------------------------------------------------
+# Fake fastembed engine for LocalEmbeddingProvider tests
+# ---------------------------------------------------------------------------
+
+
+class FakeTextEmbedding:
+    """Fake fastembed.TextEmbedding that returns deterministic vectors."""
+
+    def __init__(self, model_name: str = "nomic-ai/nomic-embed-text-v1.5-Q"):
+        self.model_name = model_name
+
+    def embed(self, texts):
+        """Return a list of numpy arrays with deterministic values."""
+        for text in texts:
+            vec = np.array([float(ord(c)) for c in text[:768]])
+            # Pad to 768 dims
+            if len(vec) < 768:
+                vec = np.pad(vec, (0, 768 - len(vec)))
+            yield vec
 
 
 # ---------------------------------------------------------------------------
@@ -133,28 +154,98 @@ class TestL2Normalize:
 
 
 class TestCreateProvider:
-    async def test_returns_none_without_api_key(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        provider = await create_provider()
-        assert provider is None
-
-    async def test_returns_none_with_empty_key(self, monkeypatch):
-        monkeypatch.setenv("OPENAI_API_KEY", "")
-        provider = await create_provider()
-        assert provider is None
-
-    async def test_returns_none_with_whitespace_key(self, monkeypatch):
-        monkeypatch.setenv("OPENAI_API_KEY", "   ")
-        provider = await create_provider()
-        assert provider is None
-
-    async def test_returns_provider_with_key(self, monkeypatch):
+    async def test_auto_detect_prefers_openai(self, monkeypatch):
+        """When OPENAI_API_KEY is set and no explicit provider, auto-detect picks OpenAI."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key-123")
+        monkeypatch.delenv("KRAANG_EMBEDDING_PROVIDER", raising=False)
+        monkeypatch.delenv("KRAANG_EMBEDDING_MODEL", raising=False)
         provider = await create_provider()
         assert provider is not None
         assert provider.provider_id == "openai"
         assert provider.model == "text-embedding-3-small"
         assert provider.dims == 1536
+
+    async def test_auto_detect_falls_back_to_local(self, monkeypatch):
+        """Without OPENAI_API_KEY and no explicit provider, auto-detect picks local."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("KRAANG_EMBEDDING_PROVIDER", raising=False)
+        monkeypatch.delenv("KRAANG_EMBEDDING_MODEL", raising=False)
+        with patch("kraang.embeddings.TextEmbedding", FakeTextEmbedding):
+            provider = await create_provider()
+        assert provider is not None
+        assert provider.provider_id == "local"
+        assert provider.dims == 768
+
+    async def test_explicit_openai_with_key(self, monkeypatch):
+        monkeypatch.setenv("KRAANG_EMBEDDING_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key-123")
+        monkeypatch.delenv("KRAANG_EMBEDDING_MODEL", raising=False)
+        provider = await create_provider()
+        assert provider is not None
+        assert provider.provider_id == "openai"
+
+    async def test_explicit_openai_without_key(self, monkeypatch):
+        """Explicitly requesting openai without a key returns None."""
+        monkeypatch.setenv("KRAANG_EMBEDDING_PROVIDER", "openai")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        provider = await create_provider()
+        assert provider is None
+
+    async def test_explicit_local(self, monkeypatch):
+        monkeypatch.setenv("KRAANG_EMBEDDING_PROVIDER", "local")
+        monkeypatch.delenv("KRAANG_EMBEDDING_MODEL", raising=False)
+        with patch("kraang.embeddings.TextEmbedding", FakeTextEmbedding):
+            provider = await create_provider()
+        assert provider is not None
+        assert provider.provider_id == "local"
+        assert provider.model == "nomic-ai/nomic-embed-text-v1.5-Q"
+
+    async def test_explicit_local_with_model_override(self, monkeypatch):
+        monkeypatch.setenv("KRAANG_EMBEDDING_PROVIDER", "local")
+        monkeypatch.setenv("KRAANG_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+        with patch("kraang.embeddings.TextEmbedding", FakeTextEmbedding):
+            provider = await create_provider()
+        assert provider is not None
+        assert provider.provider_id == "local"
+        assert provider.model == "BAAI/bge-small-en-v1.5"
+        assert provider.dims == 384
+
+    async def test_unknown_provider_falls_back_to_auto_detect(self, monkeypatch):
+        """Unknown KRAANG_EMBEDDING_PROVIDER logs warning and falls back to auto-detect."""
+        monkeypatch.setenv("KRAANG_EMBEDDING_PROVIDER", "gemini")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("KRAANG_EMBEDDING_MODEL", raising=False)
+        with patch("kraang.embeddings.TextEmbedding", FakeTextEmbedding):
+            provider = await create_provider()
+        # Falls back to local since no OPENAI_API_KEY
+        assert provider is not None
+        assert provider.provider_id == "local"
+
+    async def test_model_override_ignored_for_openai(self, monkeypatch, caplog):
+        """KRAANG_EMBEDDING_MODEL with openai provider logs a warning."""
+        import logging
+
+        monkeypatch.setenv("KRAANG_EMBEDDING_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key-123")
+        monkeypatch.setenv("KRAANG_EMBEDDING_MODEL", "text-embedding-3-large")
+        with caplog.at_level(logging.WARNING, logger="kraang.embeddings"):
+            provider = await create_provider()
+        assert provider is not None
+        assert provider.provider_id == "openai"
+        assert provider.model == "text-embedding-3-small"  # Override ignored
+        assert "ignored" in caplog.text.lower()
+
+    async def test_auto_detect_local_with_model_override(self, monkeypatch):
+        """KRAANG_EMBEDDING_MODEL works with auto-detect local path."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("KRAANG_EMBEDDING_PROVIDER", raising=False)
+        monkeypatch.setenv("KRAANG_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+        with patch("kraang.embeddings.TextEmbedding", FakeTextEmbedding):
+            provider = await create_provider()
+        assert provider is not None
+        assert provider.provider_id == "local"
+        assert provider.model == "BAAI/bge-small-en-v1.5"
+        assert provider.dims == 384
 
 
 # ---------------------------------------------------------------------------
@@ -182,12 +273,8 @@ class TestOpenAIProvider:
 
     async def test_embed_query_calls_api(self, monkeypatch):
         """Mock httpx to verify embed_query calls the API correctly."""
-        response_data = {
-            "data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]
-        }
-        fake_client = FakeClient(
-            handler=lambda url, headers, json: FakeResponse(response_data)
-        )
+        response_data = {"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]}
+        fake_client = FakeClient(handler=lambda url, headers, json: FakeResponse(response_data))
         _patch_httpx(monkeypatch, fake_client)
 
         p = OpenAIEmbeddingProvider("sk-test-key")
@@ -204,9 +291,7 @@ class TestOpenAIProvider:
                 {"index": 0, "embedding": [0.1, 0.2, 0.3]},
             ]
         }
-        fake_client = FakeClient(
-            handler=lambda url, headers, json: FakeResponse(response_data)
-        )
+        fake_client = FakeClient(handler=lambda url, headers, json: FakeResponse(response_data))
         _patch_httpx(monkeypatch, fake_client)
 
         p = OpenAIEmbeddingProvider("sk-test-key")
@@ -219,9 +304,7 @@ class TestOpenAIProvider:
     async def test_retry_on_failure(self, monkeypatch):
         """Test that _call_api retries on transient failures."""
         call_count = 0
-        response_data = {
-            "data": [{"index": 0, "embedding": [1.0, 0.0]}]
-        }
+        response_data = {"data": [{"index": 0, "embedding": [1.0, 0.0]}]}
 
         def handler(url, headers, json):
             nonlocal call_count
@@ -251,14 +334,15 @@ class TestOpenAIProvider:
         with pytest.raises(RuntimeError, match="failed after"):
             await p.embed_query("test")
 
-    async def test_no_retry_on_client_errors(self, monkeypatch):
-        """401/403 errors should raise immediately without retrying."""
+    @pytest.mark.parametrize("status_code", [401, 403])
+    async def test_no_retry_on_client_errors(self, monkeypatch, status_code):
+        """Client errors (401, 403) should raise immediately without retrying."""
         call_count = 0
 
         def handler(url, headers, json):
             nonlocal call_count
             call_count += 1
-            return FakeResponse(status_code=401)
+            return FakeResponse(status_code=status_code)
 
         fake_client = FakeClient(handler=handler)
         _patch_httpx(monkeypatch, fake_client)
@@ -269,25 +353,6 @@ class TestOpenAIProvider:
         with pytest.raises(httpx.HTTPStatusError):
             await p.embed_query("test")
         assert call_count == 1  # No retries — raised immediately
-
-    async def test_no_retry_on_403(self, monkeypatch):
-        """403 errors should raise immediately without retrying."""
-        call_count = 0
-
-        def handler(url, headers, json):
-            nonlocal call_count
-            call_count += 1
-            return FakeResponse(status_code=403)
-
-        fake_client = FakeClient(handler=handler)
-        _patch_httpx(monkeypatch, fake_client)
-
-        p = OpenAIEmbeddingProvider("sk-test-key")
-        import httpx
-
-        with pytest.raises(httpx.HTTPStatusError):
-            await p.embed_query("test")
-        assert call_count == 1
 
     async def test_embed_query_empty_string_raises(self):
         """Empty string should raise ValueError immediately."""
@@ -307,18 +372,17 @@ class TestOpenAIProvider:
         with pytest.raises(ValueError, match="empty"):
             await p.embed_batch(["hello", ""])
 
-    async def test_retry_on_429(self, monkeypatch):
-        """429 rate limit should be retried."""
+    @pytest.mark.parametrize("status_code", [429, 502])
+    async def test_retry_on_server_errors(self, monkeypatch, status_code):
+        """Server errors (429, 502, etc.) should be retried."""
         call_count = 0
-        response_data = {
-            "data": [{"index": 0, "embedding": [1.0, 0.0]}]
-        }
+        response_data = {"data": [{"index": 0, "embedding": [1.0, 0.0]}]}
 
         def handler(url, headers, json):
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                return FakeResponse(status_code=429)
+                return FakeResponse(status_code=status_code)
             return FakeResponse(response_data)
 
         fake_client = FakeClient(handler=handler)
@@ -328,6 +392,95 @@ class TestOpenAIProvider:
         result = await p.embed_query("test")
         assert len(result) == 2
         assert call_count == 3  # 2 retries + 1 success
+
+    async def test_client_reused_across_calls(self, monkeypatch):
+        """The httpx client should be reused, not recreated per call."""
+        response_data = {"data": [{"index": 0, "embedding": [1.0, 0.0]}]}
+        fake_client = FakeClient(handler=lambda url, headers, json: FakeResponse(response_data))
+        _patch_httpx(monkeypatch, fake_client)
+
+        p = OpenAIEmbeddingProvider("sk-test-key")
+        await p.embed_query("first")
+        client_after_first = p._client
+        await p.embed_query("second")
+        assert p._client is client_after_first
+
+
+# ---------------------------------------------------------------------------
+# Local provider
+# ---------------------------------------------------------------------------
+
+
+class TestLocalProvider:
+    def test_provider_id(self):
+        p = LocalEmbeddingProvider()
+        assert p.provider_id == "local"
+
+    def test_model_default(self):
+        p = LocalEmbeddingProvider()
+        assert p.model == "nomic-ai/nomic-embed-text-v1.5-Q"
+
+    def test_dims_known_model(self):
+        p = LocalEmbeddingProvider(model="BAAI/bge-small-en-v1.5")
+        assert p.dims == 384
+
+    async def test_dims_unknown_model_probed_from_engine(self):
+        """Unknown models get dims by probing the engine on first use."""
+        with patch("kraang.embeddings.TextEmbedding", FakeTextEmbedding):
+            p = LocalEmbeddingProvider(model="some-unknown/model")
+            # dims is None before engine init
+            assert p._dims is None
+            # Trigger engine init
+            await p.embed_query("probe")
+            # Now dims should be probed from the engine output
+            assert p.dims == 768
+
+    async def test_embed_query(self):
+        with patch("kraang.embeddings.TextEmbedding", FakeTextEmbedding):
+            p = LocalEmbeddingProvider()
+            result = await p.embed_query("hello world")
+        assert len(result) == 768
+        # Should be L2 normalized
+        norm = math.sqrt(sum(x * x for x in result))
+        assert norm == pytest.approx(1.0)
+
+    async def test_embed_batch(self):
+        with patch("kraang.embeddings.TextEmbedding", FakeTextEmbedding):
+            p = LocalEmbeddingProvider()
+            results = await p.embed_batch(["hello", "world"])
+        assert len(results) == 2
+        for vec in results:
+            assert len(vec) == 768
+            norm = math.sqrt(sum(x * x for x in vec))
+            assert norm == pytest.approx(1.0)
+
+    async def test_embed_batch_empty(self):
+        p = LocalEmbeddingProvider()
+        result = await p.embed_batch([])
+        assert result == []
+
+    async def test_embed_query_empty_string_raises(self):
+        p = LocalEmbeddingProvider()
+        with pytest.raises(ValueError, match="empty"):
+            await p.embed_query("")
+
+    async def test_embed_query_whitespace_only_raises(self):
+        p = LocalEmbeddingProvider()
+        with pytest.raises(ValueError, match="empty"):
+            await p.embed_query("   ")
+
+    async def test_embed_batch_empty_string_raises(self):
+        p = LocalEmbeddingProvider()
+        with pytest.raises(ValueError, match="empty"):
+            await p.embed_batch(["hello", ""])
+
+    async def test_lazy_engine_init(self):
+        """Engine is not loaded until first embed call."""
+        with patch("kraang.embeddings.TextEmbedding", FakeTextEmbedding):
+            p = LocalEmbeddingProvider()
+            assert p._engine is None
+            await p.embed_query("trigger init")
+            assert p._engine is not None
 
 
 # ---------------------------------------------------------------------------
@@ -340,4 +493,10 @@ class TestProtocol:
         from kraang.embeddings import EmbeddingProvider
 
         p = OpenAIEmbeddingProvider("sk-test")
+        assert isinstance(p, EmbeddingProvider)
+
+    def test_local_provider_is_embedding_provider(self):
+        from kraang.embeddings import EmbeddingProvider
+
+        p = LocalEmbeddingProvider()
         assert isinstance(p, EmbeddingProvider)

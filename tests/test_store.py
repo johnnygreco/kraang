@@ -9,7 +9,7 @@ import pytest
 from kraang.config import normalize_title
 from kraang.models import Session, utcnow
 from kraang.search import build_fts_query
-from kraang.store import SQLiteStore, _cosine_similarity
+from kraang.store import SQLiteStore, _cosine_similarity, content_hash
 
 # ---------------------------------------------------------------------------
 # Cosine similarity edge cases
@@ -31,6 +31,24 @@ class TestCosineSimilarity:
 
     def test_opposite_vectors(self):
         assert _cosine_similarity([1.0, 0.0], [-1.0, 0.0]) == pytest.approx(-1.0)
+
+
+# ---------------------------------------------------------------------------
+# content_hash
+# ---------------------------------------------------------------------------
+
+
+class TestContentHash:
+    def test_deterministic(self):
+        assert content_hash("hello") == content_hash("hello")
+
+    def test_different_inputs_different_hashes(self):
+        assert content_hash("hello") != content_hash("world")
+
+    def test_returns_hex_string(self):
+        h = content_hash("test")
+        assert isinstance(h, str)
+        assert len(h) == 64  # SHA-256 hex digest
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +387,19 @@ class TestSessions:
         sessions = await store.list_sessions()
         assert len(sessions) == 2
 
+    async def test_list_sessions_pagination(self, store):
+        for i in range(5):
+            s = await self._make_session(session_id=f"page-session-{i}")
+            await store.upsert_session(s)
+
+        page1 = await store.list_sessions(limit=2, offset=0)
+        page2 = await store.list_sessions(limit=2, offset=2)
+        assert len(page1) == 2
+        assert len(page2) == 2
+        ids1 = {s.session_id for s in page1}
+        ids2 = {s.session_id for s in page2}
+        assert ids1.isdisjoint(ids2)
+
     async def test_search_sessions(self, store):
         session = await self._make_session(
             user_text="How do I configure FTS5 search in SQLite?",
@@ -408,8 +439,6 @@ class TestSessions:
         assert await store.count_sessions() == 1
 
     async def test_ambiguous_prefix_raises(self, store):
-        import pytest
-
         s1 = await self._make_session(session_id="aaaa-1111-0000-0000-000000000001")
         s2 = await self._make_session(session_id="aaaa-2222-0000-0000-000000000002")
         await store.upsert_session(s1)
@@ -417,6 +446,33 @@ class TestSessions:
 
         with pytest.raises(ValueError, match="Ambiguous"):
             await store.get_session("aaaa")
+
+    async def test_last_indexed_at_empty(self, store):
+        assert await store.last_indexed_at() is None
+
+    async def test_last_indexed_at(self, store):
+        session = await self._make_session()
+        await store.upsert_session(session)
+        result = await store.last_indexed_at()
+        assert result is not None
+        assert result.tzinfo is not None
+
+    async def test_corrupted_session_json_fallback(self, store):
+        """Corrupted tools_used_json/files_edited_json should fall back gracefully."""
+        session = await self._make_session()
+        await store.upsert_session(session)
+
+        await store._conn.execute(
+            "UPDATE sessions SET tools_used_json = 'not-json', "
+            "files_edited_json = 'also-bad' WHERE session_id = ?",
+            (session.session_id,),
+        )
+        await store._conn.commit()
+
+        loaded = await store.get_session(session.session_id)
+        assert loaded is not None
+        assert loaded.tools_used == []
+        assert loaded.files_edited == []
 
 
 # ---------------------------------------------------------------------------
@@ -487,8 +543,6 @@ class TestEmbeddingCache:
 
         cached = await store.get_cached_embedding("openai", "text-embedding-3-small", "hash123")
         assert cached is not None
-        import pytest
-
         assert cached == pytest.approx(embedding, abs=1e-6)
 
     async def test_cache_miss(self, store):
@@ -512,8 +566,6 @@ class TestEmbeddingCache:
 
         cached = await store.get_cached_embedding("p", "m", "h")
         assert cached is not None
-        import pytest
-
         assert cached == pytest.approx([3.0, 4.0], abs=1e-6)
 
     async def test_corrupted_embedding_returns_none(self, store):
@@ -523,8 +575,12 @@ class TestEmbeddingCache:
             " (provider, model, content_hash, embedding, dims, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?)",
             (
-                "test", "test-model", "corrupt_hash",
-                b"not-valid-float-data", 3, "2024-01-01T00:00:00+00:00",
+                "test",
+                "test-model",
+                "corrupt_hash",
+                b"not-valid-float-data",
+                3,
+                "2024-01-01T00:00:00+00:00",
             ),
         )
         await store._conn.commit()
@@ -559,15 +615,6 @@ class TestVectorSearch:
         assert len(results) > 0
         assert results[0].note.note_id == note.note_id
         assert results[0].score > 0.0
-
-    async def test_bruteforce_excludes_forgotten(self, store):
-        store._vec_loaded = False
-        note, _ = await store.upsert_note("Forgotten vec", "Content")
-        await store.upsert_note_embedding(note.note_id, [1.0, 0.0])
-        await store.set_relevance("Forgotten vec", 0.0)
-
-        results = await store.search_notes_vector([1.0, 0.0], limit=5)
-        assert len(results) == 0
 
     async def test_bruteforce_skips_forgotten_notes(self, store):
         """Brute-force search should skip forgotten notes and fill the limit."""
@@ -640,3 +687,23 @@ class TestNoteEmbedding:
         """ensure_vec_table should be a no-op when sqlite-vec is unavailable."""
         store._vec_loaded = False
         await store.ensure_vec_table(1536)  # Should not raise
+
+    async def test_ensure_vec_table_rebuilds_on_dim_mismatch(self, store):
+        """ensure_vec_table should drop and recreate when dimensions change."""
+        assert store._vec_loaded is True, "sqlite-vec must be available for this test"
+
+        # Create with 1536 dims
+        await store.ensure_vec_table(1536)
+        note, _ = await store.upsert_note("Dim test", "Content")
+        await store.upsert_note_embedding(note.note_id, [0.1] * 1536)
+
+        # Verify initial table works
+        results = await store.search_notes_vector([0.1] * 1536, limit=1)
+        assert len(results) == 1
+
+        # Rebuild with 768 dims — should drop and recreate
+        await store.ensure_vec_table(768)
+
+        # Old embedding should be gone; new table has different dims
+        results = await store.search_notes_vector([0.1] * 768, limit=1)
+        assert len(results) == 0

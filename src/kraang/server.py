@@ -343,7 +343,9 @@ async def status() -> str:
         if provider is not None:
             embedding_status = f"{provider.provider_id}/{provider.model} ({provider.dims} dims)"
         else:
-            embedding_status = "disabled — set OPENAI_API_KEY to enable semantic search"
+            embedding_status = (
+                "disabled — set OPENAI_API_KEY or install fastembed for semantic search"
+            )
 
         return format_status(
             active_notes=active,

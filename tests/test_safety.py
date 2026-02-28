@@ -74,9 +74,7 @@ class TestLooksLikeInjectionNegative:
         assert looks_like_injection("") is False
 
     def test_technical_discussion(self):
-        assert looks_like_injection(
-            "The system architecture uses microservices"
-        ) is False
+        assert looks_like_injection("The system architecture uses microservices") is False
 
     def test_mention_of_system_without_colon(self):
         assert looks_like_injection("The system performed well") is False

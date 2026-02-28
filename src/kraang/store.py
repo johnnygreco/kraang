@@ -763,7 +763,7 @@ class SQLiteStore:
     # =========================================================================
 
     async def ensure_vec_table(self, dims: int) -> None:
-        """Create the ``notes_vec`` virtual table if it doesn't exist.
+        """Create the ``notes_vec`` virtual table, rebuilding on dimension mismatch.
 
         No-op when sqlite-vec is unavailable.
         """
@@ -772,10 +772,43 @@ class SQLiteStore:
             return
         async with self._write_lock:
             try:
-                await self._conn.execute(
-                    f"CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec "
-                    f"USING vec0(note_id TEXT PRIMARY KEY, embedding float[{dims}])"
+                # Check if the table already exists.
+                cur = await self._conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name='notes_vec'"
                 )
+                exists = await cur.fetchone()
+
+                if exists:
+                    # Probe the current dimensions with a dummy query.
+                    # sqlite-vec raises OperationalError when the probe
+                    # vector byte-size doesn't match the declared dims.
+                    import sqlite3
+
+                    try:
+                        probe = struct.pack(f"<{dims}f", *([0.0] * dims))
+                        await self._conn.execute(
+                            "SELECT note_id FROM notes_vec "
+                            "WHERE embedding MATCH ? LIMIT 1",
+                            (probe,),
+                        )
+                    except sqlite3.OperationalError:
+                        # Dimension mismatch — drop and recreate.
+                        # All stored note embeddings are lost and will
+                        # be regenerated on subsequent remember calls.
+                        logger.info(
+                            "notes_vec dimension mismatch — rebuilding for %d dims",
+                            dims,
+                            exc_info=True,
+                        )
+                        await self._conn.execute("DROP TABLE notes_vec")
+                        exists = None
+
+                if not exists:
+                    await self._conn.execute(
+                        f"CREATE VIRTUAL TABLE IF NOT EXISTS notes_vec "
+                        f"USING vec0(note_id TEXT PRIMARY KEY, embedding float[{dims}])"
+                    )
                 await self._conn.commit()
             except Exception:
                 logger.warning("Failed to create notes_vec table", exc_info=True)

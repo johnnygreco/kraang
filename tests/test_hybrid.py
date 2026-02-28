@@ -115,9 +115,7 @@ class TestHybridSearchWithProvider:
         note_id = notes[0].note.note_id
         await populated_store.upsert_note_embedding(note_id, [0.6, 0.6, 0.6])
 
-        results = await hybrid_search(
-            populated_store, MockProvider(), "asyncio"
-        )
+        results = await hybrid_search(populated_store, MockProvider(), "asyncio")
         # Should return results from at least FTS
         assert isinstance(results, list)
         assert len(results) > 0
@@ -146,9 +144,7 @@ class TestHybridSearchWithProvider:
         original = hybrid_module._MIN_SCORE
         try:
             hybrid_module._MIN_SCORE = 0.99  # Very high threshold
-            results = await hybrid_search(
-                populated_store, MockProvider(), "asyncio"
-            )
+            results = await hybrid_search(populated_store, MockProvider(), "asyncio")
             # All results should have score >= min_score
             for r in results:
                 assert r.score >= 0.99
@@ -190,14 +186,10 @@ class TestHybridSearchWithProvider:
         await populated_store.ensure_vec_table(3)
         notes = await populated_store.search_notes('"python"', limit=1)
         if notes:
-            await populated_store.upsert_note_embedding(
-                notes[0].note.note_id, [0.5, 0.5, 0.5]
-            )
+            await populated_store.upsert_note_embedding(notes[0].note.note_id, [0.5, 0.5, 0.5])
 
         # "the and or" are all stop words — build_fts_query returns ""
-        results = await hybrid_search(
-            populated_store, MockProvider(), "the and or"
-        )
+        results = await hybrid_search(populated_store, MockProvider(), "the and or")
         # Should not crash; may return vector results if embeddings exist
         assert isinstance(results, list)
 

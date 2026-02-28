@@ -385,6 +385,7 @@ class TestStatusEmbeddings:
 
     async def test_status_disabled_no_api_key(self, store, monkeypatch):
         """Status should show 'set OPENAI_API_KEY' message when no key configured."""
+
         async def _no_provider():
             return None
 
@@ -420,6 +421,7 @@ class TestContextMaxResults:
 
     async def test_context_error_includes_exception_type(self, store, monkeypatch):
         """context error message should include exception type."""
+
         async def _broken():
             raise RuntimeError("db error")
 
@@ -469,6 +471,7 @@ class TestRememberEmbeddingFeedback:
 
     async def test_update_shows_fts_only(self, store, monkeypatch):
         """Updated note output should also show [FTS only] indicator."""
+
         async def _no_provider():
             return None
 
