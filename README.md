@@ -1,7 +1,7 @@
 <table>
   <tr>
     <td><img src="assets/kraang.jpeg" alt="Kraang" width="350"></td>
-    <td><h1>Kraang</h1><b>A second brain for you and your agents.</b></td>
+    <td><h1>Kraang</h1><b>Long-term memory for your agents.</b></td>
   </tr>
 </table>
 
