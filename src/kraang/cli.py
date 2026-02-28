@@ -42,7 +42,8 @@ _KRAANG_RULES = """\
 # Kraang — Second Brain
 
 You have access to the **kraang** MCP server, a persistent knowledge base.
-Save knowledge worth preserving and retrieve prior context when relevant.
+Use it to save knowledge worth preserving and to retrieve context \
+from prior sessions when relevant.
 
 ## When to save notes
 
@@ -64,17 +65,23 @@ Use `remember` whenever you encounter:
 
 ## When to search
 
-Use `recall` only when the message suggests prior context
-not already in the current conversation.
+Use `recall` only when the user's message suggests prior work, \
+decisions, or context that you don't have from the current conversation.
 
 **Recall when you detect:**
 
-- **Continuity** — "pick up where we left off," "continue with X," "let's resume"
-- **References** — "like we did," "same approach as," "the pattern we used"
-- **History** — "why do we X," "what was the issue with," "what did we decide"
-- **Explicit requests** — "check your notes," "search memory," "do you remember"
-- **Conventions** — "what's our convention for," "how do we usually"
-- **Recurring problems** — "this broke again," "same error as before"
+- **Continuity signals** — "pick up where we left off," \
+"continue with X," "back to X," "revisit," "let's resume"
+- **Reference signals** — "like we did," "same approach as," \
+"the pattern we used," "the way we handle"
+- **History questions** — "why do we X," "what was the issue with," \
+"how did we set up," "what did we decide"
+- **Explicit requests** — "check your notes," "search memory," \
+"do you remember"
+- **Convention/preference queries** — "what's our convention for," \
+"how do we usually," "what's the preferred way"
+- **Recurring-problem signals** — "this broke again," \
+"same error as before," "I'm hitting that issue again"
 
 **Do NOT recall when:**
 
