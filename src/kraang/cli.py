@@ -42,7 +42,7 @@ _KRAANG_RULES = """\
 # Kraang — Second Brain
 
 You have access to the **kraang** MCP server, a persistent knowledge base.
-Use it proactively throughout every session.
+Use it to save knowledge worth preserving and to retrieve context from prior sessions when relevant.
 
 ## When to save notes
 
@@ -64,9 +64,24 @@ Use `remember` whenever you encounter:
 
 ## When to search
 
-- At the **start of a session**, use `recall` to search for related notes
-- Before tackling a **new problem**, search for related past insights
-- When the user asks about something that **might have been solved before**
+Use `recall` only when the user's message suggests prior work, decisions, or context that you don't have from the current conversation.
+
+**Recall when you detect:**
+
+- **Continuity signals** — "pick up where we left off," "continue with X," "back to X," "revisit," "let's resume"
+- **Reference signals** — "like we did," "same approach as," "the pattern we used," "the way we handle"
+- **History questions** — "why do we X," "what was the issue with," "how did we set up," "what did we decide"
+- **Explicit requests** — "check your notes," "search memory," "do you remember"
+- **Convention/preference queries** — "what's our convention for," "how do we usually," "what's the preferred way"
+- **Recurring-problem signals** — "this broke again," "same error as before," "I'm hitting that issue again"
+
+**Do NOT recall when:**
+
+- Starting a session with a clearly new, self-contained task
+- The request is a general coding/knowledge question unrelated to project history
+- The task is purely forward-looking with no backward reference
+- The current conversation already contains the needed context
+- You are unsure — default to NOT recalling; the user can always ask you to search
 
 ## Housekeeping
 
