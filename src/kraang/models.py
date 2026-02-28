@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def new_id() -> str:
@@ -22,7 +22,7 @@ def new_id() -> str:
 # ---------------------------------------------------------------------------
 
 
-class SearchScope(str, Enum):
+class SearchScope(StrEnum):
     """What to search in a recall query."""
 
     ALL = "all"

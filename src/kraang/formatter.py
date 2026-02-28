@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from kraang.models import (
     Note,
@@ -19,9 +19,9 @@ from kraang.models import (
 
 def _relative_time(dt: datetime) -> str:
     """Format a datetime as a relative time string (e.g. '2d ago')."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     delta = now - dt
     days = delta.days
 
@@ -65,7 +65,7 @@ def _format_tags(tags: list[str]) -> str:
 def _format_date(dt: datetime) -> str:
     """Format a datetime for display."""
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt.strftime("%Y-%m-%d")
 
 

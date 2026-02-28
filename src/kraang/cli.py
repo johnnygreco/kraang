@@ -7,7 +7,7 @@ import json
 import logging
 import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -30,7 +30,7 @@ def _run(coro):
 
 def _backup_file(path: Path, kraang_dir: Path) -> Path:
     """Create a timestamped backup of *path* inside .kraang/backups/."""
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     backup_dir = kraang_dir / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     backup = backup_dir / f"{path.name}.{ts}.bak"

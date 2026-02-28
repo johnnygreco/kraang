@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -21,9 +21,9 @@ console = Console()
 
 def _relative_time(dt: datetime) -> str:
     """Format a datetime as a relative time string."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     delta = now - dt
     days = delta.days
 
@@ -59,7 +59,7 @@ def _format_duration(seconds: int) -> str:
 def _format_date(dt: datetime) -> str:
     """Format a datetime for display."""
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt.strftime("%b %d %I:%M %p")
 
 

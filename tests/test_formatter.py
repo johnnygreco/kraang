@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from kraang.formatter import (
     format_forget,
@@ -30,8 +30,8 @@ def _make_note(**overrides) -> Note:
         "tags": ["python", "testing"],
         "category": "engineering",
         "relevance": 1.0,
-        "created_at": datetime(2026, 2, 10, tzinfo=timezone.utc),
-        "updated_at": datetime(2026, 2, 10, tzinfo=timezone.utc),
+        "created_at": datetime(2026, 2, 10, tzinfo=UTC),
+        "updated_at": datetime(2026, 2, 10, tzinfo=UTC),
     }
     defaults.update(overrides)
     return Note(**defaults)
@@ -44,8 +44,8 @@ def _make_session(**overrides) -> Session:
         "project_path": "/test/project",
         "git_branch": "feature/search",
         "model": "claude-opus-4-6",
-        "started_at": datetime(2026, 2, 9, 14, 30, tzinfo=timezone.utc),
-        "ended_at": datetime(2026, 2, 9, 14, 42, tzinfo=timezone.utc),
+        "started_at": datetime(2026, 2, 9, 14, 30, tzinfo=UTC),
+        "ended_at": datetime(2026, 2, 9, 14, 42, tzinfo=UTC),
         "duration_s": 720,
         "user_turn_count": 4,
         "assistant_turn_count": 4,
@@ -189,7 +189,7 @@ class TestFormatStatus:
             active_notes=10,
             forgotten_notes=2,
             session_count=5,
-            last_indexed=datetime(2026, 2, 14, tzinfo=timezone.utc),
+            last_indexed=datetime(2026, 2, 14, tzinfo=UTC),
             recent_notes=[_make_note()],
             categories={"engineering": 5, "personal": 3},
             tags={"python": 4, "testing": 2},
