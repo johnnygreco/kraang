@@ -11,6 +11,8 @@ Kraang is an MCP (Model Context Protocol) server that gives AI assistants persis
 
 AI assistants forget everything between sessions. Kraang gives them persistent memory — decisions, debugging breakthroughs, patterns — so your next conversation picks up where the last one left off.
 
+**Requires Python 3.11+**
+
 ## Quick Start
 
 The fastest way to get started is with `kraang init`:
@@ -71,7 +73,7 @@ Kraang uses a layered architecture:
 2. **Store** (`store.py`) -- SQLite backend with FTS5 full-text search, BM25 ranking, vector storage, and brute-force cosine fallback.
 3. **Search** (`search.py`) -- Query parsing and FTS5 expression building.
 4. **Hybrid** (`hybrid.py`) -- Hybrid vector + keyword search with weighted merge and FTS fallback.
-5. **Embeddings** (`embeddings.py`) -- Embedding provider abstraction with OpenAI implementation, retry logic, and L2 normalization.
+5. **Embeddings** (`embeddings.py`) -- Embedding provider abstraction with OpenAI and local (fastembed) implementations, retry logic, and L2 normalization.
 6. **Safety** (`safety.py`) -- Prompt injection detection and safe context formatting for LLM consumption.
 7. **Indexer** (`indexer.py`) -- Reads Claude Code JSONL transcripts and indexes sessions.
 8. **Server** (`server.py`) -- MCP server exposing 6 tools over stdio.
@@ -82,36 +84,37 @@ Kraang uses a layered architecture:
 
 ## Semantic Search (optional)
 
-Kraang supports hybrid semantic + keyword search for more intelligent recall. When enabled, queries like "that debugging trick from last week" work alongside exact keyword matches.
+Kraang supports hybrid semantic + keyword search for more intelligent recall. Queries like "that debugging trick from last week" work alongside exact keyword matches.
 
-### Setup
+Semantic search works **out of the box** using local embeddings via [fastembed](https://github.com/qdrant/fastembed) (ONNX-based, runs on CPU). No API key required.
 
-Set your OpenAI API key to enable semantic search:
+### Providers
 
-```bash
-export OPENAI_API_KEY="sk-..."
-kraang status  # verify: should show openai/text-embedding-3-small
-```
-
-When enabled, `remember` automatically embeds notes for semantic search. Existing notes can be re-saved to generate embeddings.
+| Provider | Model | Dims | Setup |
+|----------|-------|------|-------|
+| **Local** (default) | `nomic-ai/nomic-embed-text-v1.5-Q` | 768 | Works automatically |
+| **OpenAI** | `text-embedding-3-small` | 1536 | Set `OPENAI_API_KEY` |
 
 ### How it works
 
 - **Hybrid search**: Combines vector similarity (70%) with keyword matching (30%)
-- **Graceful degradation**: No API key? Everything works with keyword search only
-- **Embedding cache**: Content-addressed cache avoids redundant API calls
+- **Zero config**: Local embeddings are used by default — no API key needed
+- **Graceful degradation**: If both providers fail, keyword search still works
+- **Embedding cache**: Content-addressed cache avoids redundant computation/API calls
 - **Safety framing**: The `context` tool wraps recalled memories with prompt injection protection
 
 ### Environment variables
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
-| `OPENAI_API_KEY` | No | — | Enables semantic search via OpenAI embeddings |
+| `KRAANG_EMBEDDING_PROVIDER` | No | auto-detect | Force `"openai"` or `"local"` |
+| `KRAANG_EMBEDDING_MODEL` | No | — | Override the local model name |
+| `OPENAI_API_KEY` | No | — | Enables OpenAI embeddings (auto-detected when set) |
 | `KRAANG_DB_PATH` | No | `<project_root>/.kraang/kraang.db` | Override database location |
 
 ### Claude Code integration
 
-When using `kraang init`, add `OPENAI_API_KEY` to the generated `.mcp.json` to enable semantic search in Claude Code:
+When using `kraang init`, optionally add `OPENAI_API_KEY` to the generated `.mcp.json` to use OpenAI embeddings instead of local:
 
 ```json
 {
